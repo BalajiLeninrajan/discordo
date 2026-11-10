@@ -159,10 +159,7 @@ func (m Model) drawCompact(builder *markdown.Builder, message discord.Message, b
 		content()
 	}
 
-	if message.EditedTimestamp.IsValid() {
-		builder.Write(" ", baseStyle)
-		builder.Write(editedIndicator, dimStyle)
-	}
+	m.drawIndicators(builder, message, baseStyle)
 }
 
 func (m Model) drawCozy(builder *markdown.Builder, message discord.Message, baseStyle tview.Style, grouped bool, content func()) {
@@ -171,10 +168,7 @@ func (m Model) drawCozy(builder *markdown.Builder, message discord.Message, base
 		if content != nil {
 			content()
 		}
-		if message.EditedTimestamp.IsValid() {
-			builder.Write(" ", baseStyle)
-			builder.Write(editedIndicator, dimStyle)
-		}
+		m.drawIndicators(builder, message, baseStyle)
 		return
 	}
 
@@ -184,14 +178,35 @@ func (m Model) drawCozy(builder *markdown.Builder, message discord.Message, base
 		builder.Write(m.formatTimestamp(message.Timestamp), dimStyle)
 	}
 
-	if message.EditedTimestamp.IsValid() {
-		builder.Write(" ", baseStyle)
-		builder.Write(editedIndicator, dimStyle)
-	}
+	m.drawIndicators(builder, message, baseStyle)
 
 	if content != nil {
 		builder.NewLine()
 		content()
+	}
+}
+
+// drawIndicators writes that message was edited, and that it was deleted, after it.
+func (m Model) drawIndicators(builder *markdown.Builder, message discord.Message, baseStyle tview.Style) {
+	dimStyle := baseStyle.Dim(true)
+	if message.EditedTimestamp.IsValid() {
+		builder.Write(" ", baseStyle)
+		builder.Write(editedIndicator, dimStyle)
+	}
+	if m.log.isDeleted(message.ID) {
+		builder.Write(" ", baseStyle)
+		builder.Write(deletedIndicator, dimStyle)
+	}
+}
+
+// drawEditHistory writes what message said before each of its edits, a line each with when it was edited, oldest first.
+func (m Model) drawEditHistory(builder *markdown.Builder, message discord.Message, baseStyle tview.Style) {
+	style := tview.MergeStyle(baseStyle, m.cfg.Theme.MessagesList.EditHistoryStyle.Style)
+	for _, edit := range m.log.history(message.ID) {
+		builder.Write(edit.content, style)
+		builder.Write(" ", baseStyle)
+		builder.Write("("+m.formatTimestamp(edit.replaced)+")", baseStyle.Dim(true))
+		builder.NewLine()
 	}
 }
 
@@ -291,8 +306,11 @@ func (m Model) drawSnapshotContent(builder *markdown.Builder, parent discord.Mes
 }
 
 func (m Model) drawDefaultMessage(builder *markdown.Builder, message discord.Message, root ast.Node, baseStyle tview.Style, grouped bool) {
-	content := func() { m.drawContent(builder, message, root, baseStyle) }
-	if message.Content == "" {
+	content := func() {
+		m.drawEditHistory(builder, message, baseStyle)
+		m.drawContent(builder, message, root, baseStyle)
+	}
+	if message.Content == "" && len(m.log.history(message.ID)) == 0 {
 		content = nil
 	}
 

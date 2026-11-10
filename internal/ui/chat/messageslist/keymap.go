@@ -57,6 +57,16 @@ func (m Model) FullHelp() [][]keybind.Keybind {
 // messageHelp returns the keybinds that act on message: replying to it, managing it and opening what it has.
 func (m Model) messageHelp(message discord.Message) (actions, manage, attachments []keybind.Keybind) {
 	keybinds := m.cfg.Keybinds.MessagesList
+	// A deleted message that was kept can only be dropped, and what it has opened.
+	if m.log.isDeleted(message.ID) {
+		forget := keybinds.DeleteConfirm.Keybind
+		manage = append(manage, forget.WithHelp(forget.Help().Key, "forget"))
+		if len(message.Attachments) != 0 || len(m.selectedURLs()) != 0 {
+			attachments = append(attachments, keybinds.Open.Keybind, keybinds.OpenInBrowser.Keybind)
+		}
+		return actions, manage, attachments
+	}
+
 	mine := ui.IsMe(m.state, message.Author.ID)
 	if !mine {
 		actions = append(actions, keybinds.Reply.Keybind, keybinds.ReplyMention.Keybind)

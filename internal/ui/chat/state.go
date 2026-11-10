@@ -3,12 +3,15 @@ package chat
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ayn2op/arikawa/v3/discord"
 	"github.com/ayn2op/arikawa/v3/gateway"
+	"github.com/ayn2op/arikawa/v3/utils/handler"
 	"github.com/ayn2op/arikawa/v3/utils/httputil/httpdriver"
 	"github.com/ayn2op/arikawa/v3/utils/ws"
 	"github.com/ayn2op/discordo/internal/ui"
+	"github.com/ayn2op/discordo/internal/ui/chat/messageslist"
 	"github.com/ayn2op/ningen/v3/states/read"
 	"github.com/ayn2op/tview"
 	"github.com/ayn2op/tview/cmd"
@@ -20,6 +23,36 @@ func onRequest(req httpdriver.Request) error {
 	}
 
 	return nil
+}
+
+// priorTimeout is how long a message waits to be sent ahead of the event that deletes or edits it, so that events keep
+// being handled when nothing takes them, as when logging out.
+const priorTimeout = time.Second
+
+// sendPriors sends each cached message ahead of the event that deletes or edits it, for the message logger. The state
+// drops or replaces the message before the event reaches the model, which could not tell what it said otherwise.
+func (m Model) sendPriors() {
+	send := func(channelID discord.ChannelID, id discord.MessageID) {
+		message, err := m.state.Cabinet.Message(channelID, id)
+		if err != nil {
+			return
+		}
+
+		select {
+		case m.events <- &messageslist.PriorEvent{Message: *message}:
+		case <-time.After(priorTimeout):
+		}
+	}
+
+	pre := handler.New()
+	pre.AddSyncHandler(func(event *gateway.MessageDeleteEvent) { send(event.ChannelID, event.ID) })
+	pre.AddSyncHandler(func(event *gateway.MessageUpdateEvent) { send(event.ChannelID, event.ID) })
+	pre.AddSyncHandler(func(event *gateway.MessageDeleteBulkEvent) {
+		for _, id := range event.IDs {
+			send(event.ChannelID, id)
+		}
+	})
+	m.state.PreHandler = pre
 }
 
 func (m *Model) loadGuildsTree(event *gateway.ReadyEvent) tview.Cmd {
@@ -132,8 +165,14 @@ func (m *Model) applyEvent(event gateway.Event) tview.Cmd {
 		return cmd.Batch{m.updatePane(paneGuildsTree, event), m.updatePane(paneMembersTree, event)}
 	case *gateway.GuildMemberListUpdateEvent:
 		return m.updatePane(paneMembersTree, event)
+	case *messageslist.PriorEvent:
+		m.messagesList.RememberPrior(event.Message)
 	case *gateway.MessageDeleteEvent:
 		m.messagesList.DeleteMessage(event.ChannelID, event.ID)
+	case *gateway.MessageDeleteBulkEvent:
+		for _, id := range event.IDs {
+			m.messagesList.DeleteMessage(event.ChannelID, id)
+		}
 	case *gateway.MessageReactionAddEvent:
 		return m.messagesList.RefreshMessage(event.ChannelID, event.MessageID)
 	case *gateway.MessageReactionAddManyEvent:
