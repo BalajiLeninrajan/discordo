@@ -72,7 +72,8 @@ func (m Model) writeMessage(builder *markdown.Builder, message discord.Message, 
 }
 
 // reactionsView returns the reactions wrapped to the width of the message, with the image of each custom emoji that has one before its name, or nil if there are none.
-func (m Model) reactionsView(reactions []discord.Reaction) tview.Widget {
+// Each reaction that reactors names the users of is followed by them.
+func (m Model) reactionsView(reactions []discord.Reaction, reactors map[discord.APIEmoji][]string) tview.Widget {
 	if len(reactions) == 0 {
 		return nil
 	}
@@ -89,7 +90,11 @@ func (m Model) reactionsView(reactions []discord.Reaction) tview.Widget {
 		style = tview.MergeStyle(theme.MessageStyle.Style, style)
 
 		emoji, hasImage := m.images[emojis.URLFromID(reaction.Emoji.ID)]
-		spans := []text.Span{{Text: m.reactionLabel(reaction, hasImage), Style: style}}
+		label := m.reactionLabel(reaction, hasImage)
+		if names, ok := reactors[reaction.Emoji.APIString()]; ok {
+			label += " " + reactorsLabel(names, reaction.Count)
+		}
+		spans := []text.Span{{Text: label, Style: style}}
 		// Each reaction but the last ends with the separator, so a line never starts with one.
 		if index < len(reactions)-1 {
 			spans = append(spans, text.Span{Text: cfg.Separator, Style: separatorStyle})

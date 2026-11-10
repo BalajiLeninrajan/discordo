@@ -472,7 +472,7 @@ func TestModelReactionsView(t *testing.T) {
 		}
 		defer screen.Fini()
 
-		ml.reactionsView(reactions).Draw(screen, tview.Rectangle{Width: 20, Height: 1})
+		ml.reactionsView(reactions, nil).Draw(screen, tview.Rectangle{Width: 20, Height: 1})
 		var row strings.Builder
 		for x := range 20 {
 			str, _, _ := screen.Get(x, 0)
