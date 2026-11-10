@@ -967,6 +967,12 @@ React to the selected message with an emoji picked from a list.
 
 Default: `"a"`
 
+### keybinds.messages_list.who_reacted
+
+Show or hide who reacted to the selected message, after each of its reactions.
+
+Default: `"w"`
+
 ### keybinds.messages_list.download
 
 Download one of the selected message's attachments.

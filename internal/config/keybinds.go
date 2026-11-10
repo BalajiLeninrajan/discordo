@@ -158,6 +158,8 @@ type MessagesListKeybinds struct {
 	OpenInBrowser Keybind `toml:"open_in_browser"`
 	// React to the selected message with an emoji picked from a list.
 	React Keybind `toml:"react"`
+	// Show or hide who reacted to the selected message, after each of its reactions.
+	WhoReacted Keybind `toml:"who_reacted"`
 	// Download one of the selected message's attachments.
 	Download Keybind `toml:"download"`
 	// Play, pause or resume the selected voice message.
@@ -351,6 +353,7 @@ func defaultKeybinds() Keybinds {
 			Open:          key("open", "o"),
 			OpenInBrowser: key("open browser", "O"),
 			React:         key("react", "a"),
+			WhoReacted:    key("who reacted", "w"),
 			Download:      key("download", "D"),
 			Play:          key("play", "p"),
 			SeekBackward:  key("seek back", "h", "left"),

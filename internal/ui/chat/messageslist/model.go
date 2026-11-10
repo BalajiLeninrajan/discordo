@@ -63,6 +63,9 @@ type Model struct {
 	voiceStatus voice.PlayerStatus
 	// seeking reports whether the waveform of the voice message is dragged, which is sought once it is let go of.
 	seeking bool
+
+	// reactors names who reacted to the messages asked about, by emoji. Copies of the model share it.
+	reactors map[discord.MessageID]map[discord.APIEmoji][]string
 }
 
 func NewModel(cfg *config.Config, state *ningen.State) Model {
@@ -73,6 +76,7 @@ func NewModel(cfg *config.Config, state *ningen.State) Model {
 		state:       state,
 		renderer:    markdown.NewRenderer(cfg),
 		voicePlayer: voice.NewPlayer(),
+		reactors:    make(map[discord.MessageID]map[discord.APIEmoji][]string),
 	}
 
 	ml.scrollState.ScrollToEnd()
@@ -177,6 +181,10 @@ func (m *Model) RefreshMessage(channelID discord.ChannelID, id discord.MessageID
 	}
 
 	m.setMessage(m.indexOf(channelID, id), *message)
+	// Who reacted is asked again, as the reactions changed.
+	if _, ok := m.reactors[id]; ok {
+		return cmd.Batch{m.LoadImages(), m.fetchReactors(*message)}
+	}
 	return m.LoadImages()
 }
 
@@ -201,6 +209,7 @@ func (m *Model) clearViews() {
 
 func (m *Model) reset() {
 	m.items = nil
+	clear(m.reactors)
 	m.cursor, m.target = -1, -1
 	m.scrollState = viewport.ScrollState{}
 	m.scrollState.ScrollToEnd()
@@ -302,7 +311,7 @@ func (m Model) itemView(item *messageItem) tview.Widget {
 	}
 
 	if m.cfg.UI.MessagesList.Reactions.Enabled && !m.blocked(message.Author) {
-		body = body.Push(m.reactionsView(message.Reactions))
+		body = body.Push(m.reactionsView(message.Reactions, m.reactors[message.ID]))
 	}
 
 	var view tview.Widget = body
@@ -621,6 +630,8 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 			return m, m.download()
 		case keybind.Matches(msg, keybinds.React.Keybind):
 			return m, m.showReactions()
+		case keybind.Matches(msg, keybinds.WhoReacted.Keybind):
+			return m, m.toggleReactors()
 		case keybind.Matches(msg, keybinds.Reply.Keybind):
 			return m, m.reply(false)
 		case keybind.Matches(msg, keybinds.ReplyMention.Keybind):
@@ -634,6 +645,9 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		}
 	case olderMessagesLoadedMsg:
 		return m, m.prependOlder(msg)
+	case reactorsLoadedMsg:
+		m.setReactors(msg)
+		return m, nil
 	case playMsg:
 		return m, m.play(discord.Attachment(msg))
 	case seekPressMsg:
