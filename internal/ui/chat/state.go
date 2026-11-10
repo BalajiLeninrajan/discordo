@@ -34,6 +34,10 @@ func (m *Model) addMessageOrNotify(message *gateway.MessageCreateEvent) tview.Cm
 	if channel := m.selectedChannel; channel != nil && channel.ID == message.ChannelID {
 		delete(m.typers, message.Author.ID)
 		command = cmd.Batch{command, m.messagesList.AddMessage(message.Message)}
+		// A message that arrives in the open channel is read, unless the window is not looked at.
+		if !m.windowUnfocused {
+			go m.state.ReadState.MarkRead(channel.ID, message.ID)
+		}
 		if !m.windowUnfocused || !m.cfg.Notifications.WhenUnfocused {
 			return command
 		}

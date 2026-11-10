@@ -158,3 +158,67 @@ func TestModelRefreshReadState(t *testing.T) {
 		}
 	})
 }
+
+func TestModelUnreadChannels(t *testing.T) {
+	s := ningen.FromState(state.NewWithStore("", defaultstore.New()))
+	me := discord.User{ID: 2}
+	guild := discord.Guild{ID: 1, Name: "guild", OwnerID: me.ID}
+	category := discord.Channel{ID: 10, GuildID: guild.ID, Type: discord.GuildCategory, Name: "category"}
+	unread := discord.Channel{ID: 11, GuildID: guild.ID, Type: discord.GuildText, Name: "unread", ParentID: category.ID, LastMessageID: 200}
+	read := discord.Channel{ID: 12, GuildID: guild.ID, Type: discord.GuildText, Name: "read", ParentID: category.ID, LastMessageID: 200}
+	mentioned := discord.Channel{ID: 13, GuildID: guild.ID, Type: discord.GuildText, Name: "mentioned", LastMessageID: 200}
+	// A channel without a read state was never opened, and is left alone.
+	unseen := discord.Channel{ID: 14, GuildID: guild.ID, Type: discord.GuildText, Name: "unseen", LastMessageID: 200}
+	dm := discord.Channel{ID: 20, Type: discord.DirectMessage, LastMessageID: 200, DMRecipients: []discord.User{{ID: 3}}}
+	if err := errors.Join(
+		s.MyselfSet(me, false),
+		s.GuildSet(&guild, false),
+		s.MemberSet(guild.ID, &discord.Member{User: me}, false),
+		s.RoleSet(guild.ID, &discord.Role{ID: discord.RoleID(guild.ID)}, false),
+		s.ChannelSet(&category, false),
+		s.ChannelSet(&unread, false),
+		s.ChannelSet(&read, false),
+		s.ChannelSet(&mentioned, false),
+		s.ChannelSet(&unseen, false),
+		s.ChannelSet(&dm, false),
+	); err != nil {
+		t.Fatal(err)
+	}
+	s.State.Call(&gateway.ReadyEvent{User: me, ReadStates: []gateway.ReadState{
+		{ChannelID: unread.ID, LastMessageID: 100},
+		{ChannelID: read.ID, LastMessageID: 200},
+		{ChannelID: mentioned.ID, LastMessageID: 200, MentionCount: 1},
+		{ChannelID: dm.ID, LastMessageID: 100},
+	}})
+
+	cfg := config.Default()
+	m := NewModel(&cfg, s)
+	for _, test := range []struct {
+		name string
+		ref  any
+		want []discord.ChannelID
+	}{
+		{"channel", unread.ID, []discord.ChannelID{unread.ID}},
+		{"read channel", read.ID, nil},
+		{"mentioned channel", mentioned.ID, []discord.ChannelID{mentioned.ID}},
+		{"unseen channel", unseen.ID, nil},
+		{"category", category.ID, []discord.ChannelID{unread.ID}},
+		{"guild", guild.ID, []discord.ChannelID{unread.ID, mentioned.ID}},
+		{"direct messages", dmNode{}, []discord.ChannelID{dm.ID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var got []discord.ChannelID
+			for _, channel := range m.unreadChannels(tree.NewNode("").SetReference(test.ref)) {
+				got = append(got, channel.ID)
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, test.want) {
+				t.Errorf("unreadChannels = %v, want %v", got, test.want)
+			}
+		})
+	}
+
+	if got := m.unreadChannels(nil); got != nil {
+		t.Errorf("unreadChannels(nil) = %v, want none", got)
+	}
+}
