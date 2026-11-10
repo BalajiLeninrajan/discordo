@@ -2,6 +2,7 @@ package guildstree
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/ayn2op/arikawa/v3/discord"
 	"github.com/ayn2op/discordo/internal/ui"
@@ -142,5 +143,82 @@ func loadChannel(state *ningen.State, limit uint, channel discord.Channel) tview
 		}
 
 		return ChannelLoadedMsg{Channel: channel, Messages: messages}
+	})
+}
+
+// markReadInterval is the time between the acknowledgements of several channels, which take a request each.
+const markReadInterval = 50 * time.Millisecond
+
+// unreadChannels returns the channels under node with unread messages or mentions: the channel itself, or those of the category, guild or direct messages it is.
+func (m Model) unreadChannels(node *tree.Node) []discord.Channel {
+	if node == nil {
+		return nil
+	}
+
+	var channels []discord.Channel
+	switch ref := node.Reference().(type) {
+	case discord.GuildID:
+		channels, _ = m.state.Cabinet.Channels(ref)
+	case dmNode:
+		channels, _ = m.state.PrivateChannels()
+	case discord.ChannelID:
+		channel, err := m.state.Cabinet.Channel(ref)
+		if err != nil {
+			return nil
+		}
+		if channel.Type != discord.GuildCategory {
+			channels = []discord.Channel{*channel}
+			break
+		}
+
+		siblings, _ := m.state.Cabinet.Channels(channel.GuildID)
+		for _, sibling := range siblings {
+			if sibling.ParentID == channel.ID {
+				channels = append(channels, sibling)
+			}
+		}
+	}
+
+	var unread []discord.Channel
+	for _, channel := range channels {
+		if m.hasUnread(channel) {
+			unread = append(unread, channel)
+		}
+	}
+	return unread
+}
+
+// hasUnread reports whether channel has messages or mentions the user has not read. Unlike the style of its node, it counts a muted channel, as marking it read is asked for.
+func (m Model) hasUnread(channel discord.Channel) bool {
+	state := m.state.ReadState.ReadState(channel.ID)
+	if state == nil {
+		return false
+	}
+	if state.MentionCount > 0 {
+		return true
+	}
+
+	last := m.state.LastMessage(channel.ID)
+	if !last.IsValid() || state.LastMessageID >= last {
+		return false
+	}
+	return !channel.GuildID.IsValid() || m.state.HasPermissions(channel.ID, discord.PermissionViewChannel)
+}
+
+// markRead marks the unread channels under node read up to their newest message.
+func (m Model) markRead(node *tree.Node) tview.Cmd {
+	channels := m.unreadChannels(node)
+	if len(channels) == 0 {
+		return nil
+	}
+
+	return cmd.Task(func() tview.Msg {
+		for index, channel := range channels {
+			if index > 0 {
+				time.Sleep(markReadInterval)
+			}
+			m.state.ReadState.MarkRead(channel.ID, m.state.LastMessage(channel.ID))
+		}
+		return nil
 	})
 }

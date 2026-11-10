@@ -776,6 +776,12 @@ Default: `"K"`
 
 Default: `"J"`
 
+### keybinds.guilds_tree.mark_read
+
+Mark the highlighted channel read, or every channel of the highlighted category, guild or direct messages.
+
+Default: `"m"`
+
 ### keybinds.guilds_tree.toggle_voice
 
 Join the highlighted voice channel to listen, or leave it.
