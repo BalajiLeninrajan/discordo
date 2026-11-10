@@ -113,6 +113,9 @@ func NewModel(cfg *config.Config, token string) Model {
 
 	m.events = make(chan gateway.Event)
 	m.state.AddChanHandler(m.events)
+	if cfg.MessageLogger.Enabled {
+		m.sendPriors()
+	}
 	m.state.StateLog = func(err error) {
 		slog.Error("state log", "err", err)
 	}

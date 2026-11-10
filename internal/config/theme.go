@@ -199,6 +199,10 @@ type (
 
 		MessageStyle         Style `toml:"message_style"`
 		SelectedMessageStyle Style `toml:"selected_message_style"`
+		// The style of a message that was deleted, which the message logger keeps.
+		DeletedMessageStyle Style `toml:"deleted_message_style"`
+		// The style of what a message said before it was edited, shown above what it says now.
+		EditHistoryStyle Style `toml:"edit_history_style"`
 
 		Embeds MessagesListEmbedsThemeConfig `toml:"embeds"`
 	}
@@ -312,6 +316,8 @@ func defaultTheme() ThemeConfig {
 			ReactionStyle:        dim,
 			OwnReactionStyle:     Style{bold},
 			SelectedMessageStyle: Style{plain.Reverse(true)},
+			DeletedMessageStyle:  Style{plain.Foreground(color.Red)},
+			EditHistoryStyle:     Style{plain.Dim(true).StrikeThrough(true)},
 			Embeds: MessagesListEmbedsThemeConfig{
 				ProviderStyle:    Style{italic.Dim(true)},
 				AuthorStyle:      Style{italic},

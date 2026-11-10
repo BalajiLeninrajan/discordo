@@ -152,6 +152,15 @@ Whether to receive typing status.
 
 Default: `true`
 
+# message_logger
+
+## message_logger.enabled
+
+Whether to keep showing messages that others delete, and what their messages said before each edit.
+They are kept in memory only, until discordo exits.
+
+Default: `true`
+
 # sidebar
 
 The guilds tree pane.
@@ -1323,6 +1332,18 @@ Default: `{}`
 ### theme.messages_list.selected_message_style
 
 Default: `{ attributes = "reverse" }`
+
+### theme.messages_list.deleted_message_style
+
+The style of a message that was deleted, which the message logger keeps.
+
+Default: `{ foreground = "red" }`
+
+### theme.messages_list.edit_history_style
+
+The style of what a message said before it was edited, shown above what it says now.
+
+Default: `{ attributes = ["dim","strikethrough"] }`
 
 ### theme.messages_list.embeds
 

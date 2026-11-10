@@ -76,6 +76,12 @@ type (
 		WhenUnfocused bool `toml:"when_unfocused"`
 	}
 
+	MessageLogger struct {
+		// Whether to keep showing messages that others delete, and what their messages said before each edit.
+		// They are kept in memory only, until discordo exits.
+		Enabled bool `toml:"enabled"`
+	}
+
 	TypingIndicator struct {
 		// Whether to send typing status.
 		Send bool `toml:"send"`
@@ -195,6 +201,7 @@ type (
 		DateSeparator   DateSeparator   `toml:"date_separator"`
 		Notifications   Notifications   `toml:"notifications"`
 		TypingIndicator TypingIndicator `toml:"typing_indicator"`
+		MessageLogger   MessageLogger   `toml:"message_logger"`
 		// The guilds tree pane.
 		Sidebar SidebarConfig `toml:"sidebar"`
 		// The members tree pane, sized from the width right of the guilds tree.
@@ -236,6 +243,7 @@ func Default() Config {
 		DateSeparator:   DateSeparator{Enabled: true, Format: "January 2, 2006", Character: "─"},
 		Notifications:   Notifications{Enabled: true, WhenUnfocused: true},
 		TypingIndicator: TypingIndicator{Send: true, Receive: true},
+		MessageLogger:   MessageLogger{Enabled: true},
 		Sidebar: SidebarConfig{
 			PaneConfig: pane,
 			Markers:    SidebarMarkersConfig{Expanded: "▾ ", Collapsed: "▸ "},

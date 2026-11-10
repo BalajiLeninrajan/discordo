@@ -66,6 +66,8 @@ type Model struct {
 
 	// reactors names who reacted to the messages asked about, by emoji. Copies of the model share it.
 	reactors map[discord.MessageID]map[discord.APIEmoji][]string
+	// log keeps deleted messages and what messages said before their edits. Copies of the model share it.
+	log *messageLog
 }
 
 func NewModel(cfg *config.Config, state *ningen.State) Model {
@@ -77,6 +79,7 @@ func NewModel(cfg *config.Config, state *ningen.State) Model {
 		renderer:    markdown.NewRenderer(cfg),
 		voicePlayer: voice.NewPlayer(),
 		reactors:    make(map[discord.MessageID]map[discord.APIEmoji][]string),
+		log:         newMessageLog(),
 	}
 
 	ml.scrollState.ScrollToEnd()
@@ -169,6 +172,7 @@ func (m *Model) ShowNewest() {
 
 // UpdateMessage replaces the shown message with the same ID.
 func (m *Model) UpdateMessage(message discord.Message) tview.Cmd {
+	m.logEdit(message)
 	m.setMessage(m.indexOf(message.ChannelID, message.ID), message)
 	return m.LoadImages()
 }
@@ -188,8 +192,11 @@ func (m *Model) RefreshMessage(channelID discord.ChannelID, id discord.MessageID
 	return m.LoadImages()
 }
 
-// DeleteMessage removes the shown message with id.
+// DeleteMessage removes the shown message with id, unless the message logger keeps it, shown as deleted.
 func (m *Model) DeleteMessage(channelID discord.ChannelID, id discord.MessageID) {
+	if m.logDeleted(channelID, id) {
+		return
+	}
 	m.deleteMessage(m.indexOf(channelID, id))
 }
 
@@ -220,6 +227,7 @@ func (m *Model) setMessages(messages []discord.Message) {
 	for _, message := range slices.Backward(messages) {
 		m.items = append(m.items, messageItem{message: message})
 	}
+	m.items = m.withDeleted(m.items, 0)
 	m.rebuildItems()
 }
 
@@ -294,6 +302,9 @@ func (m Model) itemView(item *messageItem) tview.Widget {
 	message := &item.message
 	root := m.contentRoot(item)
 	style := m.cfg.Theme.MessagesList.MessageStyle.Style
+	if m.log.isDeleted(message.ID) {
+		style = tview.MergeStyle(style, m.cfg.Theme.MessagesList.DeletedMessageStyle.Style)
+	}
 
 	// Attachments are named in the text, before the embeds.
 	body := column.New(messageText(m.renderMessage(*message, root, style, item.grouped))).Height(layout.Shrink)
@@ -457,6 +468,10 @@ func (m *Model) prependOlder(msg olderMessagesLoadedMsg) tview.Cmd {
 	older := make([]messageItem, len(msg.older))
 	for index, message := range msg.older {
 		older[index] = messageItem{message: message}
+	}
+	// The deleted messages that were among them go back in, up to the oldest message shown.
+	if first := m.messageIndex(-1, 1); first != -1 {
+		older = m.withDeleted(older, m.items[first].message.ID)
 	}
 
 	m.items = slices.Concat(older, m.items)
@@ -638,9 +653,14 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 			return m, m.reply(true)
 		case keybind.Matches(msg, keybinds.Edit.Keybind):
 			return m, m.editSelectedMessage()
-		case keybind.Matches(msg, keybinds.Delete.Keybind):
-			return m, m.deleteSelectedMessage()
-		case keybind.Matches(msg, keybinds.DeleteConfirm.Keybind):
+		case keybind.Matches(msg, keybinds.Delete.Keybind, keybinds.DeleteConfirm.Keybind):
+			// A deleted message that was kept has nothing left to delete, and is dropped instead.
+			if m.forgetSelected() {
+				return m, nil
+			}
+			if keybind.Matches(msg, keybinds.Delete.Keybind) {
+				return m, m.deleteSelectedMessage()
+			}
 			return m, m.confirmDelete()
 		}
 	case olderMessagesLoadedMsg:
