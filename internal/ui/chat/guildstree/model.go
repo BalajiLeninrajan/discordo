@@ -258,7 +258,7 @@ func (m Model) createChannelNode(parent *tree.Node, channel discord.Channel) {
 		channelNode.SetIndent(indents.GroupDM)
 	case discord.GuildCategory:
 		channelNode.SetIndent(indents.Category)
-		channelNode.SetExpandable(true).SetExpanded(true)
+		channelNode.SetExpandable(true).SetExpanded(false)
 	case discord.GuildForum:
 		channelNode.SetIndent(indents.Forum)
 		channelNode.SetExpandable(true).SetExpanded(false)
