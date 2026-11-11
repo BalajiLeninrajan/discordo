@@ -222,3 +222,46 @@ func TestModelUnreadChannels(t *testing.T) {
 		t.Errorf("unreadChannels(nil) = %v, want none", got)
 	}
 }
+
+func TestModelChannelUnreadDirectMessages(t *testing.T) {
+	s := ningen.FromState(state.NewWithStore("", defaultstore.New()))
+	me := discord.User{ID: 2}
+	friend := discord.User{ID: 3}
+	read := discord.Channel{ID: 20, Type: discord.DirectMessage, LastMessageID: 200, DMRecipients: []discord.User{friend}}
+	unread := discord.Channel{ID: 21, Type: discord.GroupDM, LastMessageID: 200, DMRecipients: []discord.User{friend, {ID: 4}}}
+	if err := errors.Join(
+		s.MyselfSet(me, false),
+		s.ChannelSet(&read, false),
+		s.ChannelSet(&unread, false),
+	); err != nil {
+		t.Fatal(err)
+	}
+	s.State.Call(&gateway.ReadyEvent{User: me, ReadStates: []gateway.ReadState{
+		{ChannelID: read.ID, LastMessageID: 200},
+		{ChannelID: unread.ID, LastMessageID: 100},
+	}})
+
+	cfg := config.Default()
+	m := NewModel(&cfg, s)
+	if got := m.channelUnread(read.ID); got != ningen.ChannelRead {
+		t.Errorf("channelUnread(read) = %v, want ChannelRead", got)
+	}
+	if got := m.channelUnread(unread.ID); got != ningen.ChannelUnread {
+		t.Errorf("channelUnread(unread) = %v, want ChannelUnread", got)
+	}
+	if got := m.dmUnread(); got != ningen.ChannelUnread {
+		t.Errorf("dmUnread() = %v, want ChannelUnread", got)
+	}
+
+	// A message that arrives in the read direct message makes it unread.
+	s.State.Call(&gateway.MessageCreateEvent{Message: discord.Message{ID: 300, ChannelID: read.ID, Author: friend}})
+	if got := m.channelUnread(read.ID); got != ningen.ChannelUnread {
+		t.Errorf("channelUnread(read) after a new message = %v, want ChannelUnread", got)
+	}
+
+	// An ack from Discord, as another client sends, rather than MarkRead, which would send a request.
+	s.State.Call(&gateway.MessageAckEvent{ChannelID: unread.ID, MessageID: 200})
+	if got := m.channelUnread(unread.ID); got != ningen.ChannelRead {
+		t.Errorf("channelUnread(unread) after marking it read = %v, want ChannelRead", got)
+	}
+}

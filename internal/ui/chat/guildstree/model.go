@@ -84,6 +84,7 @@ func (m *Model) reset() *tree.Node {
 		SetReference(dmNode{}).
 		SetExpandable(true).
 		SetExpanded(false)
+	setNodeNameStyle(m.dmRootNode, m.dmNodeStyle())
 	return m.root.ClearChildren().AddChild(m.dmRootNode)
 }
 
@@ -135,6 +136,7 @@ func (m Model) refreshReadState(event *read.UpdateEvent) {
 		m.refreshGuildNode(event.GuildID)
 	} else if m.dmRootNode != nil {
 		setNodeText(m.dmRootNode, m.dmNodeText())
+		setNodeNameStyle(m.dmRootNode, m.dmNodeStyle())
 	}
 
 	node := m.findNodeByRef(event.ChannelID)
@@ -143,8 +145,7 @@ func (m Model) refreshReadState(event *read.UpdateEvent) {
 	}
 	channel, err := m.state.Cabinet.Channel(event.ChannelID)
 	if err != nil {
-		indication := m.state.ChannelIsUnread(event.ChannelID, ningen.UnreadOpts{IncludeMutedCategories: true})
-		setNodeNameStyle(node, unreadStyle(indication))
+		setNodeNameStyle(node, unreadStyle(m.channelUnread(event.ChannelID)))
 		return
 	}
 
@@ -217,7 +218,7 @@ func (m Model) guildNodeStyle(guildID discord.GuildID) tview.Style {
 }
 
 func (m Model) channelNodeStyle(channel discord.Channel) tview.Style {
-	unread := unreadStyle(m.state.ChannelIsUnread(channel.ID, ningen.UnreadOpts{IncludeMutedCategories: true}))
+	unread := unreadStyle(m.channelUnread(channel.ID))
 	if channel.Type != discord.DirectMessage || len(channel.DMRecipients) != 1 {
 		return unread
 	}
@@ -631,17 +632,14 @@ func (m Model) isUnread(node *tree.Node) bool {
 	if len(node.Children()) > 0 {
 		return false
 	}
-	opts := ningen.UnreadOpts{IncludeMutedCategories: true}
 	switch ref := node.Reference().(type) {
 	case discord.GuildID:
-		return m.state.GuildIsUnread(ref, ningen.GuildUnreadOpts{UnreadOpts: opts}) != ningen.ChannelRead
+		opts := ningen.GuildUnreadOpts{UnreadOpts: unreadOpts}
+		return m.state.GuildIsUnread(ref, opts) != ningen.ChannelRead
 	case discord.ChannelID:
-		return m.state.ChannelIsUnread(ref, opts) != ningen.ChannelRead
+		return m.channelUnread(ref) != ningen.ChannelRead
 	case dmNode:
-		channels, _ := m.state.PrivateChannels()
-		return slices.ContainsFunc(channels, func(channel discord.Channel) bool {
-			return m.state.ChannelIsUnread(channel.ID, opts) != ningen.ChannelRead
-		})
+		return m.dmUnread() != ningen.ChannelRead
 	}
 
 	return false
@@ -718,6 +716,45 @@ func (m Model) expandPathToNode(node *tree.Node) {
 	for _, ancestor := range m.root.PathTo(node) {
 		ancestor.Expand()
 	}
+}
+
+// unreadOpts counts a channel in a muted category unless the channel itself is muted.
+var unreadOpts = ningen.UnreadOpts{IncludeMutedCategories: true}
+
+// channelUnread reports whether the channel with channelID has unread messages or mentions. Unlike ningen, it also
+// counts a direct message, which has no permissions to view it and which ningen therefore reports as read.
+func (m Model) channelUnread(channelID discord.ChannelID) ningen.UnreadIndication {
+	indication := m.state.ChannelIsUnread(channelID, unreadOpts)
+	if indication != ningen.ChannelRead {
+		return indication
+	}
+
+	channel, err := m.state.Cabinet.Channel(channelID)
+	if err != nil || channel.GuildID.IsValid() || m.state.ChannelIsMuted(channelID, unreadOpts) {
+		return indication
+	}
+
+	// The first message of a new direct message leaves a read state with no message, which is unread.
+	state := m.state.ReadState.ReadState(channelID)
+	if last := m.state.LastMessage(channelID); state != nil && last.IsValid() && state.LastMessageID < last {
+		return ningen.ChannelUnread
+	}
+	return ningen.ChannelRead
+}
+
+// dmUnread returns the strongest unread indication among the direct messages.
+func (m Model) dmUnread() ningen.UnreadIndication {
+	channels, _ := m.state.PrivateChannels()
+	indication := ningen.ChannelRead
+	for _, channel := range channels {
+		indication = max(indication, m.channelUnread(channel.ID))
+	}
+	return indication
+}
+
+// dmNodeStyle returns the style of the direct messages node, which shows whether any of them are unread.
+func (m Model) dmNodeStyle() tview.Style {
+	return unreadStyle(m.dmUnread())
 }
 
 func unreadStyle(indication ningen.UnreadIndication) tview.Style {
