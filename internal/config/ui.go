@@ -202,6 +202,9 @@ type (
 		EmojiUIConfig
 		// Whether to show reactions below messages.
 		Enabled bool `toml:"enabled"`
+		// Whether who reacted is shown after each reaction as messages come into view, rather than only for the messages the who_reacted keybind is pressed on.
+		// Each kind of reaction takes a request, so messages are asked about one at a time, newest first, and those with more than 10 kinds of reaction are skipped.
+		ShowReactors bool `toml:"show_reactors"`
 		// The text between reactions.
 		Separator string `toml:"separator"`
 	}
@@ -288,7 +291,7 @@ func defaultUI() UIConfig {
 			Avatars:            AvatarsUIConfig{Preview: true, Height: 2},
 			Embeds:             EmbedsUIConfig{Enabled: true},
 			Grouping:           GroupingUIConfig{Enabled: true, Interval: 10 * time.Minute},
-			Reactions:          ReactionsUIConfig{Enabled: true, Separator: " • "},
+			Reactions:          ReactionsUIConfig{Enabled: true, ShowReactors: true, Separator: " • "},
 		},
 		Autocomplete: AutocompleteUIConfig{
 			Mentions: SuggestionsUIConfig{Enabled: true, Preview: true},

@@ -64,22 +64,25 @@ type Model struct {
 	// seeking reports whether the waveform of the voice message is dragged, which is sought once it is let go of.
 	seeking bool
 
-	// reactors names who reacted to the messages asked about, by emoji. Copies of the model share it.
-	reactors map[discord.MessageID]map[discord.APIEmoji][]string
+	// reactors are who reacted to the messages asked about, by emoji. Copies of the model share it.
+	reactors map[discord.MessageID]map[discord.APIEmoji][]discord.User
+	// reactorsQueue holds the messages to ask who reacted to as they come into view.
+	reactorsQueue *reactorsQueue
 	// log keeps deleted messages and what messages said before their edits. Copies of the model share it.
 	log *messageLog
 }
 
 func NewModel(cfg *config.Config, state *ningen.State) Model {
 	ml := Model{
-		cursor:      -1,
-		target:      -1,
-		cfg:         cfg,
-		state:       state,
-		renderer:    markdown.NewRenderer(cfg),
-		voicePlayer: voice.NewPlayer(),
-		reactors:    make(map[discord.MessageID]map[discord.APIEmoji][]string),
-		log:         newMessageLog(),
+		cursor:        -1,
+		target:        -1,
+		cfg:           cfg,
+		state:         state,
+		renderer:      markdown.NewRenderer(cfg),
+		voicePlayer:   voice.NewPlayer(),
+		reactors:      make(map[discord.MessageID]map[discord.APIEmoji][]discord.User),
+		reactorsQueue: newReactorsQueue(),
+		log:           newMessageLog(),
 	}
 
 	ml.scrollState.ScrollToEnd()
@@ -159,9 +162,9 @@ func (m *Model) SetChannel(channel *discord.Channel, messages []discord.Message)
 	m.reset()
 	m.setMessages(messages)
 	if channel.GuildID.IsValid() {
-		return cmd.Batch{m.requestGuildMembers(channel.GuildID, messages), m.LoadImages()}
+		return cmd.Batch{m.requestGuildMembers(channel.GuildID, messages), m.LoadImages(), m.queueReactors()}
 	}
-	return m.LoadImages()
+	return cmd.Batch{m.LoadImages(), m.queueReactors()}
 }
 
 // ShowNewest clears the selection and scrolls to the newest message, which then stays in view as messages arrive until the user scrolls up.
@@ -177,7 +180,7 @@ func (m *Model) UpdateMessage(message discord.Message) tview.Cmd {
 	return m.LoadImages()
 }
 
-// RefreshMessage shows the cached state of a message, such as after a reaction.
+// RefreshMessage shows the cached state of a message, such as after a reaction, and queues it to ask who reacted to it if it now has reactions.
 func (m *Model) RefreshMessage(channelID discord.ChannelID, id discord.MessageID) tview.Cmd {
 	message, err := m.state.Cabinet.Message(channelID, id)
 	if err != nil {
@@ -185,11 +188,7 @@ func (m *Model) RefreshMessage(channelID discord.ChannelID, id discord.MessageID
 	}
 
 	m.setMessage(m.indexOf(channelID, id), *message)
-	// Who reacted is asked again, as the reactions changed.
-	if _, ok := m.reactors[id]; ok {
-		return cmd.Batch{m.LoadImages(), m.fetchReactors(*message)}
-	}
-	return m.LoadImages()
+	return cmd.Batch{m.LoadImages(), m.queueReactors()}
 }
 
 // DeleteMessage removes the shown message with id, unless the message logger keeps it, shown as deleted.
@@ -217,6 +216,7 @@ func (m *Model) clearViews() {
 func (m *Model) reset() {
 	m.items = nil
 	clear(m.reactors)
+	m.reactorsQueue.reset()
 	m.cursor, m.target = -1, -1
 	m.scrollState = viewport.ScrollState{}
 	m.scrollState.ScrollToEnd()
@@ -322,7 +322,7 @@ func (m Model) itemView(item *messageItem) tview.Widget {
 	}
 
 	if m.cfg.UI.MessagesList.Reactions.Enabled && !m.blocked(message.Author) {
-		body = body.Push(m.reactionsView(message.Reactions, m.reactors[message.ID]))
+		body = body.Push(m.reactionsView(message.Reactions, m.reactorNamesOf(message.ID)))
 	}
 
 	var view tview.Widget = body
@@ -491,10 +491,10 @@ func (m *Model) prependOlder(msg olderMessagesLoadedMsg) tview.Cmd {
 		}
 	}
 	if selectedChannel.GuildID.IsValid() {
-		return cmd.Batch{m.requestGuildMembers(selectedChannel.GuildID, msg.older), m.LoadImages()}
+		return cmd.Batch{m.requestGuildMembers(selectedChannel.GuildID, msg.older), m.LoadImages(), m.queueReactors()}
 	}
 
-	return m.LoadImages()
+	return cmd.Batch{m.LoadImages(), m.queueReactors()}
 }
 
 // scrolledToTop reports whether view is scrolled to the oldest message shown, which is false while the messages fit, as there is nothing to scroll.
@@ -608,6 +608,28 @@ func (m Model) Init() tview.Cmd {
 
 // Update returns m changed in response to msg and a command to run, or nil.
 func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
+	m, command := m.update(msg)
+	if m.bringsIntoView(msg) {
+		if queue := m.queueReactors(); queue != nil {
+			return m, cmd.Batch{command, queue}
+		}
+	}
+	return m, command
+}
+
+// bringsIntoView reports whether msg can bring other messages into view: scrolling, a click, or a key that moves the selection.
+func (m Model) bringsIntoView(msg tview.Msg) bool {
+	switch msg := msg.(type) {
+	case scrollMsg, listMsg:
+		return true
+	case tview.KeyMsg:
+		keybinds := m.cfg.Keybinds.MessagesList
+		return keybind.Matches(msg, keybinds.SelectUp.Keybind, keybinds.SelectDown.Keybind, keybinds.SelectTop.Keybind, keybinds.SelectBottom.Keybind, keybinds.SelectReply.Keybind)
+	}
+	return false
+}
+
+func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 	switch msg := msg.(type) {
 	case images.ChangedMsg:
 		m.images = msg
@@ -674,7 +696,11 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		return m, m.prependOlder(msg)
 	case reactorsLoadedMsg:
 		m.setReactors(msg)
-		return m, nil
+		if !msg.queued {
+			return m, nil
+		}
+		m.reactorsQueue.busy = false
+		return m, m.nextReactors()
 	case playMsg:
 		return m, m.play(discord.Attachment(msg))
 	case seekPressMsg:
