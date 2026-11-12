@@ -75,7 +75,7 @@ const (
 func (m *Model) JumpTo(channelID discord.ChannelID, id discord.MessageID) tview.Cmd {
 	if index := m.indexOf(channelID, id); index != -1 {
 		m.setCursor(index)
-		return nil
+		return m.queueReactors()
 	}
 
 	if m.channel == nil || m.channel.ID != channelID {

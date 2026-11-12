@@ -475,6 +475,13 @@ Whether to show reactions below messages.
 
 Default: `true`
 
+#### ui.messages_list.reactions.show_reactors
+
+Whether who reacted is shown after each reaction as messages come into view, rather than only for the messages the who_reacted keybind is pressed on.
+Each kind of reaction takes a request, so messages are asked about one at a time, newest first, and those with more than 10 kinds of reaction are skipped.
+
+Default: `true`
+
 #### ui.messages_list.reactions.separator
 
 The text between reactions.
