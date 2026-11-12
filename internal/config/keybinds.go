@@ -147,7 +147,9 @@ type MessagesListKeybinds struct {
 	Cancel Keybind `toml:"cancel"`
 	Edit   Keybind `toml:"edit"`
 	// Search the messages of the channel through Discord's search, and select the result picked.
-	// The picker keybinds move through the results; select searches, or selects the result if the query is unchanged.
+	// The query takes Discord's filters: from:user, mentions:user, has:link (or file, image, video, embed, ...), and before:, during: and after: a date as YYYY-MM-DD.
+	// The picker keybinds move through the results, or through the suggestions while typing; the composer's tab_complete completes the selected suggestion.
+	// Select completes an unfinished filter, or else searches, or selects the result if the query is unchanged.
 	Search Keybind `toml:"search"`
 
 	// Delete without confirmation. Unbound by default.
