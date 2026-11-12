@@ -25,9 +25,11 @@ const (
 type widget struct {
 	query       string
 	queryCursor int
-	results     viewport.Widget
-	keybinds    config.PickerKeybinds
-	selection   func(tview.KeyMsg) list.Action
+	// list is the results, or the suggestions while the query is typed.
+	list      viewport.Widget
+	keybinds  config.PickerKeybinds
+	complete  keybind.Keybind
+	selection func(tview.KeyMsg) list.Action
 }
 
 var _ tview.Widget = widget{}
@@ -44,7 +46,7 @@ func (w widget) Draw(screen tview.Screen, area tview.Rectangle) {
 	w.layout().Draw(screen, area)
 }
 
-// Handle turns the picker's select and cancel keys into submitMsg and CancelMsg, sends its selection keys to the results, and typing to the query.
+// Handle turns the picker's select and cancel keys into submitMsg and CancelMsg and the complete key into completeMsg, sends the selection keys to the list, and typing to the query.
 func (w widget) Handle(msg tview.Msg, area tview.Rectangle) tview.Msg {
 	if key, ok := msg.(tview.KeyMsg); ok {
 		switch {
@@ -52,9 +54,11 @@ func (w widget) Handle(msg tview.Msg, area tview.Rectangle) tview.Msg {
 			return submitMsg{}
 		case keybind.Matches(key, w.keybinds.Cancel.Keybind):
 			return CancelMsg{}
+		case keybind.Matches(key, w.complete):
+			return completeMsg{}
 		case w.selection(key) != list.ActionNone:
 			area.Y, area.Height = area.Y+queryHeight, max(area.Height-queryHeight, 0)
-			return w.results.Handle(msg, area)
+			return w.list.Handle(msg, area)
 		}
 	}
 	return w.layout().Handle(msg, area)
@@ -69,5 +73,5 @@ func (w widget) layout() tview.Widget {
 	var line tview.BorderSet
 	line.Bottom = "─"
 	header := box.New(row.New(text.New(prompt), query)).Borders(tview.BordersBottom).BorderSet(line).BorderStyle(tcell.StyleDefault.Dim(true))
-	return column.New(column.New(header).Height(layout.Fixed(queryHeight)), w.results)
+	return column.New(column.New(header).Height(layout.Fixed(queryHeight)), w.list)
 }

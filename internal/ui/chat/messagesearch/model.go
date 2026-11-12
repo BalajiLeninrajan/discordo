@@ -9,6 +9,7 @@ import (
 
 	"github.com/ayn2op/arikawa/v3/api"
 	"github.com/ayn2op/arikawa/v3/discord"
+	"github.com/ayn2op/arikawa/v3/utils/httputil"
 	"github.com/ayn2op/discordo/internal/config"
 	"github.com/ayn2op/discordo/internal/ui"
 	"github.com/ayn2op/ningen/v3"
@@ -31,8 +32,13 @@ type Model struct {
 	// query is what is typed, with the cursor at the byte offset queryCursor in it.
 	query       string
 	queryCursor int
-	// searched is the query the results are for, or "" before a search.
+	// suggestion is the selected completion of the word the cursor is in.
+	suggestion int
+	// searched is the query the results are for, or "" before a search, and data what it asked Discord for.
 	searched string
+	data     searchData
+	// problem is why the query cannot be searched for, such as a user not found, or "".
+	problem string
 	// results are the matching messages loaded so far, newest first, of total.
 	results []discord.Message
 	total   uint
@@ -65,7 +71,19 @@ func (Model) Init() tview.Cmd { return nil }
 func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 	switch msg := msg.(type) {
 	case queryMsg:
+		changed := msg.query != m.query
 		m.query, m.queryCursor = msg.query, msg.cursor
+		if changed {
+			m.suggestion, m.problem = 0, ""
+			return m, m.searchMembers()
+		}
+	case suggestionMsg:
+		m.suggestion = int(msg)
+	case completeMsg:
+		if suggestions := m.suggestions(); m.showsSuggestions(suggestions) && m.suggestion < len(suggestions) {
+			m.complete(suggestions[m.suggestion])
+			return m, m.searchMembers()
+		}
 	case cursorMsg:
 		m.cursor = int(msg)
 		m.scroll.ScrollToTarget()
@@ -82,8 +100,16 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 
 // submit searches for the query, or shows the selected result if the results are for the query.
 func (m *Model) submit() tview.Cmd {
+	if m.channel == nil {
+		return nil
+	}
+	if suggestions := m.suggestions(); m.unfinished() && m.suggestion < len(suggestions) {
+		m.complete(suggestions[m.suggestion])
+		return m.searchMembers()
+	}
+
 	query := strings.TrimSpace(m.query)
-	if query == "" || m.channel == nil {
+	if query == "" {
 		return nil
 	}
 
@@ -95,9 +121,37 @@ func (m *Model) submit() tview.Cmd {
 		return cmd.Task(func() tview.Msg { return SelectedMsg{ChannelID: result.ChannelID, MessageID: result.ID} })
 	}
 
-	m.searched, m.results, m.total, m.err = query, nil, 0, nil
+	data, err := m.parse(query)
+	if err != nil {
+		m.problem = err.Error()
+		return nil
+	}
+
+	m.searched, m.data, m.results, m.total, m.err = query, data, nil, 0, nil
 	m.cursor, m.scroll = 0, viewport.ScrollState{}
 	return m.search(0)
+}
+
+// showsSuggestions reports whether suggestions are shown in place of the results, which is while the query is being typed.
+func (m Model) showsSuggestions(suggestions []suggestion) bool {
+	return len(suggestions) != 0 && (m.searched == "" || strings.TrimSpace(m.query) != m.searched)
+}
+
+// searchMembers asks Discord for the members of the guild matching the user the cursor is in a from: or mentions: filter of. They arrive as a gateway event.
+func (m Model) searchMembers() tview.Cmd {
+	if m.channel == nil || !m.channel.GuildID.IsValid() || m.state.MemberState == nil {
+		return nil
+	}
+	start, end := word(m.query, m.queryCursor)
+	key, name, ok := filterOf(m.query[start:end])
+	if !ok || (key != "from" && key != "mentions") || name == "" {
+		return nil
+	}
+	guildID := m.channel.GuildID
+	return cmd.Task(func() tview.Msg {
+		m.state.MemberState.SearchMember(guildID, name)
+		return nil
+	})
 }
 
 // loadMore searches for the next page of results once the last one loaded is selected.
@@ -113,15 +167,15 @@ func (m *Model) search(offset uint) tview.Cmd {
 	m.request++
 	m.loading = true
 	request, channel := m.request, *m.channel
-	data := api.SearchData{Content: m.searched, ChannelID: channel.ID, Offset: offset}
+	data := m.data
+	data.Offset = offset
 	return cmd.Task(func() tview.Msg {
-		var response api.SearchResponse
-		var err error
+		// The search of a guild's channel goes through the guild, and that of a DM through the channel.
+		endpoint := api.EndpointChannels + channel.ID.String() + "/messages/search"
 		if channel.GuildID.IsValid() {
-			response, err = m.state.Search(channel.GuildID, data)
-		} else {
-			response, err = m.state.SearchDirectMessages(data)
+			endpoint = api.EndpointGuilds + channel.GuildID.String() + "/messages/search"
 		}
+		response, err := m.state.RequestJSON[api.SearchResponse]("GET", endpoint, httputil.WithSchema(m.state.Client, data))
 		if err != nil {
 			slog.Error("failed to search messages", "channel_id", channel.ID, "err", err)
 			return resultsMsg{request: request, offset: offset, err: err}
@@ -165,12 +219,14 @@ func (m *Model) setResults(msg resultsMsg) {
 // status says what the search is doing or found, shown under the results.
 func (m Model) status() string {
 	switch {
+	case m.problem != "":
+		return m.problem
 	case m.loading && len(m.results) == 0:
 		return "Searching..."
 	case m.err != nil:
 		return "Search failed"
 	case m.searched == "":
-		return "Type, then press enter to search"
+		return "Enter searches, tab completes"
 	case m.total == 0:
 		return "No results"
 	default:
@@ -224,6 +280,30 @@ func (m Model) View() tview.Widget {
 		Style(cfg.Theme.ScrollBar.TrackStyle.Style).
 		ThumbStyle(cfg.Theme.ScrollBar.ThumbStyle.Style)
 	selection := ui.SelectionKeybind(cfg.Keybinds.Picker.SelectionKeybinds)
+	w := widget{query: m.query, queryCursor: m.queryCursor, keybinds: cfg.Keybinds.Picker, complete: cfg.Keybinds.Composer.TabComplete.Keybind, selection: selection}
+
+	title := "Search"
+	if m.channel != nil {
+		title += " " + ui.ChannelToString(*m.channel, cfg.Icons, m.state)
+	}
+	box := func(w widget) tview.Widget {
+		return ui.Box(w, cfg, true).
+			Title(ui.Label(title, cfg.Theme.Title, true)).
+			Footer(ui.Label(m.status(), cfg.Theme.Footer, true))
+	}
+
+	if suggestions := m.suggestions(); m.showsSuggestions(suggestions) {
+		l := list.New(m.suggestion, len(suggestions), func(i int) tview.Widget {
+			return text.Rich(suggestions[i].label...).Wrapping(text.WrappingNone)
+		}).
+			SelectedStyle(tcell.StyleDefault.Reverse(true)).
+			Keybind(selection).
+			Focused(true).
+			OnChange(func(cursor int) tview.Msg { return suggestionMsg(cursor) })
+		w.list = viewport.New(l, viewport.ScrollState{}).Target(l.Target(m.suggestion))
+		return box(w)
+	}
+
 	results := list.New(m.cursor, len(m.results), func(i int) tview.Widget { return m.resultView(m.results[i]) }).
 		SelectedStyle(tcell.StyleDefault.Reverse(true)).
 		Keybind(selection).
@@ -234,12 +314,6 @@ func (m Model) View() tview.Widget {
 		ScrollBar(bar, cfg.UI.ScrollBar.Visibility.ScrollBarVisibility).
 		OnChange(func(s *viewport.ScrollState) tview.Msg { return scrollMsg(*s) })
 
-	title := "Search"
-	if m.channel != nil {
-		title += " " + ui.ChannelToString(*m.channel, cfg.Icons, m.state)
-	}
-	w := widget{query: m.query, queryCursor: m.queryCursor, results: resultsView, keybinds: cfg.Keybinds.Picker, selection: selection}
-	return ui.Box(w, cfg, true).
-		Title(ui.Label(title, cfg.Theme.Title, true)).
-		Footer(ui.Label(m.status(), cfg.Theme.Footer, true))
+	w.list = resultsView
+	return box(w)
 }
