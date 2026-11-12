@@ -6,11 +6,44 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ayn2op/arikawa/v3/api"
 	"github.com/ayn2op/arikawa/v3/discord"
 	"github.com/ayn2op/discordo/internal/ui/autocomplete/mentions"
 	"github.com/ayn2op/tview/text"
 )
+
+// searchData is what a search asks Discord for. Unlike api.SearchData, the filters Discord takes more than once are lists, each value sent as a parameter of its own.
+type searchData struct {
+	Offset    uint              `schema:"offset,omitempty"`
+	Content   string            `schema:"content,omitempty"`
+	ChannelID discord.ChannelID `schema:"channel_id,omitempty"`
+	AuthorIDs []discord.UserID  `schema:"author_id,omitempty"`
+	Mentions  []discord.UserID  `schema:"mentions,omitempty"`
+	Has       []string          `schema:"has,omitempty"`
+	MaxID     discord.MessageID `schema:"max_id,omitempty"`
+	MinID     discord.MessageID `schema:"min_id,omitempty"`
+}
+
+// addOnce appends value to values unless it is already there.
+func addOnce[T comparable](values []T, value T) []T {
+	if slices.Contains(values, value) {
+		return values
+	}
+	return append(values, value)
+}
+
+// before narrows data to messages before id, keeping the earlier bound if there is one.
+func (data *searchData) before(id discord.MessageID) {
+	if !data.MaxID.IsValid() || id < data.MaxID {
+		data.MaxID = id
+	}
+}
+
+// after narrows data to messages from id on, keeping the later bound if there is one.
+func (data *searchData) after(id discord.MessageID) {
+	if id > data.MinID {
+		data.MinID = id
+	}
+}
 
 // filter is a search option typed as key:value, as in Discord's search, with a hint of what its value is.
 type filter struct {
@@ -157,13 +190,14 @@ func (m Model) unfinished() bool {
 	if !ok {
 		return false
 	}
-	var data api.SearchData
+	var data searchData
 	return m.applyFilter(&data, m.query[start:end]) != nil
 }
 
 // parse returns the search the query asks for: its filters, and the rest of it as the content.
-func (m Model) parse(query string) (api.SearchData, error) {
-	data := api.SearchData{ChannelID: m.channel.ID}
+// A filter typed more than once sends each value, which Discord combines as its own search does, and dates narrow the search to where they overlap.
+func (m Model) parse(query string) (searchData, error) {
+	data := searchData{ChannelID: m.channel.ID}
 	var content []string
 	for _, word := range strings.Fields(query) {
 		if _, _, ok := filterOf(word); !ok {
@@ -171,7 +205,7 @@ func (m Model) parse(query string) (api.SearchData, error) {
 			continue
 		}
 		if err := m.applyFilter(&data, word); err != nil {
-			return api.SearchData{}, err
+			return searchData{}, err
 		}
 	}
 	data.Content = strings.Join(content, " ")
@@ -179,7 +213,7 @@ func (m Model) parse(query string) (api.SearchData, error) {
 }
 
 // applyFilter sets what the filter typed as word asks for in data.
-func (m Model) applyFilter(data *api.SearchData, word string) error {
+func (m Model) applyFilter(data *searchData, word string) error {
 	key, value, _ := filterOf(word)
 	if value == "" {
 		return fmt.Errorf("%s: needs a %s", key, filterHint(key))
@@ -192,29 +226,30 @@ func (m Model) applyFilter(data *api.SearchData, word string) error {
 			return fmt.Errorf("no user %s here", value)
 		}
 		if key == "from" {
-			data.AuthorID = userID
+			data.AuthorIDs = addOnce(data.AuthorIDs, userID)
 		} else {
-			data.Mentions = userID
+			data.Mentions = addOnce(data.Mentions, userID)
 		}
 	case "has":
 		if !slices.Contains(hasValues, strings.ToLower(value)) {
 			return fmt.Errorf("has: takes %s", strings.Join(hasValues, ", "))
 		}
-		data.Has = strings.ToLower(value)
+		data.Has = addOnce(data.Has, strings.ToLower(value))
 	default:
 		day, err := parseDate(value)
 		if err != nil {
 			return fmt.Errorf("%s: takes a date as YYYY-MM-DD", key)
 		}
-		next := day.AddDate(0, 0, 1)
+		start := discord.MessageID(discord.NewSnowflake(day))
+		next := discord.MessageID(discord.NewSnowflake(day.AddDate(0, 0, 1)))
 		switch key {
 		case "before":
-			data.MaxID = discord.MessageID(discord.NewSnowflake(day))
+			data.before(start)
 		case "after":
-			data.MinID = discord.MessageID(discord.NewSnowflake(next))
+			data.after(next)
 		case "during":
-			data.MinID = discord.MessageID(discord.NewSnowflake(day))
-			data.MaxID = discord.MessageID(discord.NewSnowflake(next))
+			data.after(start)
+			data.before(next)
 		}
 	}
 	return nil

@@ -1,11 +1,13 @@
 package messagesearch
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ayn2op/arikawa/v3/discord"
+	"github.com/ayn2op/arikawa/v3/utils/httputil"
 )
 
 func TestWord(t *testing.T) {
@@ -91,7 +93,7 @@ func TestModelComplete(t *testing.T) {
 
 	t.Run("enter searches a finished filter", func(t *testing.T) {
 		got, command := typed(m, "from:alice lunch").Update(submitMsg{})
-		if command == nil || !got.loading || got.data.AuthorID != 5 || got.data.Content != "lunch" {
+		if command == nil || !got.loading || !slices.Equal(got.data.AuthorIDs, []discord.UserID{5}) || got.data.Content != "lunch" {
 			t.Fatalf("data = %+v, loading = %v", got.data, got.loading)
 		}
 	})
@@ -116,7 +118,7 @@ func TestModelParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := time.Date(2026, 3, 4, 0, 0, 0, 0, time.Local)
-	if data.Content != "see you" || data.Mentions != 5 || data.Has != "link" || data.ChannelID != m.channel.ID {
+	if data.Content != "see you" || !slices.Equal(data.Mentions, []discord.UserID{5}) || !slices.Equal(data.Has, []string{"link"}) || data.ChannelID != m.channel.ID {
 		t.Fatalf("data = %+v", data)
 	}
 	if !data.MinID.Time().Equal(day) || !data.MaxID.Time().Equal(day.AddDate(0, 0, 1)) {
@@ -129,6 +131,30 @@ func TestModelParse(t *testing.T) {
 	if data, _ := m.parse("after:2026-03-04"); !data.MinID.Time().Equal(day.AddDate(0, 0, 1)) || data.MaxID.IsValid() {
 		t.Fatalf("after = %+v", data)
 	}
+
+	t.Run("repeated filters", func(t *testing.T) {
+		if err := m.state.MemberSet(guildID, &discord.Member{User: discord.User{ID: 6, Username: "bob"}}, false); err != nil {
+			t.Fatal(err)
+		}
+		data, err := m.parse("from:Al from:bob from:alice has:link has:image has:link before:2026-03-10 before:2026-03-04 after:2026-03-01 after:2026-03-02")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(data.AuthorIDs, []discord.UserID{5, 6}) || !slices.Equal(data.Has, []string{"link", "image"}) {
+			t.Fatalf("data = %+v, want both authors and both kinds, once each", data)
+		}
+		if !data.MaxID.Time().Equal(day) || !data.MinID.Time().Equal(time.Date(2026, 3, 3, 0, 0, 0, 0, time.Local)) {
+			t.Fatalf("dates = %v to %v, want where they overlap", data.MinID.Time(), data.MaxID.Time())
+		}
+
+		values, err := new(httputil.DefaultSchema).Encode(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(values["author_id"], []string{"5", "6"}) || !slices.Equal(values["has"], []string{"link", "image"}) || values.Has("mentions") {
+			t.Fatalf("values = %v, want a parameter for each value", values)
+		}
+	})
 
 	for _, query := range []string{"from:", "has:everything", "before:march", "from:nobody"} {
 		if _, err := m.parse(query); err == nil {
