@@ -947,6 +947,13 @@ Default: `"esc"`
 
 Default: `"e"`
 
+### keybinds.messages_list.search
+
+Search the messages of the channel through Discord's search, and select the result picked.
+The picker keybinds move through the results; select searches, or selects the result if the query is unchanged.
+
+Default: `"/"`
+
 ### keybinds.messages_list.delete
 
 Delete without confirmation. Unbound by default.
