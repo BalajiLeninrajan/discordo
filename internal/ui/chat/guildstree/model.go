@@ -151,6 +151,13 @@ func (m Model) refreshReadState(event *read.UpdateEvent) {
 
 	setNodeText(node, m.channelText(*channel))
 	setNodeNameStyle(node, m.channelNodeStyle(*channel))
+
+	// A category shows whether any of its channels are unread.
+	if parentNode := m.channelNodes[channel.ParentID]; parentNode != nil {
+		if parent, err := m.state.Cabinet.Channel(channel.ParentID); err == nil {
+			setNodeNameStyle(parentNode, m.channelNodeStyle(*parent))
+		}
+	}
 }
 
 func (m Model) refreshGuildNode(guildID discord.GuildID) {
@@ -218,6 +225,10 @@ func (m Model) guildNodeStyle(guildID discord.GuildID) tview.Style {
 }
 
 func (m Model) channelNodeStyle(channel discord.Channel) tview.Style {
+	if channel.Type == discord.GuildCategory {
+		return unreadStyle(m.categoryUnread(channel))
+	}
+
 	unread := unreadStyle(m.channelUnread(channel.ID))
 	if channel.Type != discord.DirectMessage || len(channel.DMRecipients) != 1 {
 		return unread
@@ -740,6 +751,18 @@ func (m Model) channelUnread(channelID discord.ChannelID) ningen.UnreadIndicatio
 		return ningen.ChannelUnread
 	}
 	return ningen.ChannelRead
+}
+
+// categoryUnread returns the strongest unread indication among the channels in category, which has no read state of its own.
+func (m Model) categoryUnread(category discord.Channel) ningen.UnreadIndication {
+	channels, _ := m.state.Cabinet.Channels(category.GuildID)
+	indication := ningen.ChannelRead
+	for _, channel := range channels {
+		if channel.ParentID == category.ID {
+			indication = max(indication, m.channelUnread(channel.ID))
+		}
+	}
+	return indication
 }
 
 // dmUnread returns the strongest unread indication among the direct messages.
