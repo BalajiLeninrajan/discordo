@@ -107,7 +107,7 @@ func TestModelComplete(t *testing.T) {
 func TestModelParse(t *testing.T) {
 	m := newTestModel(t)
 	guildID := m.channel.GuildID
-	if err := m.state.Cabinet.MemberSet(guildID, &discord.Member{User: discord.User{ID: 5, Username: "alice"}, Nick: "Al"}, false); err != nil {
+	if err := m.state.MemberSet(guildID, &discord.Member{User: discord.User{ID: 5, Username: "alice"}, Nick: "Al"}, false); err != nil {
 		t.Fatal(err)
 	}
 
