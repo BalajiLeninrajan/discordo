@@ -146,6 +146,9 @@ type MessagesListKeybinds struct {
 
 	Cancel Keybind `toml:"cancel"`
 	Edit   Keybind `toml:"edit"`
+	// Search the messages of the channel through Discord's search, and select the result picked.
+	// The picker keybinds move through the results; select searches, or selects the result if the query is unchanged.
+	Search Keybind `toml:"search"`
 
 	// Delete without confirmation. Unbound by default.
 	Delete        Keybind `toml:"delete"`
@@ -346,6 +349,7 @@ func defaultKeybinds() Keybinds {
 
 			Cancel: key("cancel", "esc"),
 			Edit:   key("edit", "e"),
+			Search: key("search", "/"),
 
 			Delete:        key("force delete", ""),
 			DeleteConfirm: key("delete", "d"),

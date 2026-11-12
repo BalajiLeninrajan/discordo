@@ -42,7 +42,7 @@ func (m Model) FullHelp() [][]keybind.Keybind {
 	if m.voiceStatus.ID.IsValid() {
 		attachments = append(attachments, keybinds.SeekBackward.Keybind, keybinds.SeekForward.Keybind)
 	}
-	actions = append(actions, keybinds.Cancel.Keybind)
+	actions = append(actions, keybinds.Search.Keybind, keybinds.Cancel.Keybind)
 
 	return [][]keybind.Keybind{
 		{keybinds.SelectUp.Keybind, keybinds.SelectDown.Keybind, keybinds.SelectTop.Keybind, keybinds.SelectBottom.Keybind},

@@ -521,3 +521,49 @@ func TestModelCanReact(t *testing.T) {
 		}
 	})
 }
+
+func TestModelJumpTo(t *testing.T) {
+	// selected returns the ID of the selected message, or 0 for none.
+	selected := func(ml *Model) discord.MessageID {
+		if message, ok := ml.selectedMessage(); ok {
+			return message.ID
+		}
+		return 0
+	}
+
+	t.Run("shown", func(t *testing.T) {
+		ml := newTestModel(t, testConfig(t))
+		ml.setMessages([]discord.Message{{ID: 30, ChannelID: 1}, {ID: 20, ChannelID: 1}})
+		if command := ml.JumpTo(1, 20); command != nil || selected(ml) != 20 {
+			t.Fatalf("selected = %d, command = %v", selected(ml), command)
+		}
+	})
+
+	t.Run("older than shown", func(t *testing.T) {
+		ml := newTestModel(t, testConfig(t))
+		ml.setMessages([]discord.Message{{ID: 30, ChannelID: 1}, {ID: 20, ChannelID: 1}})
+		if command := ml.JumpTo(1, 5); command == nil {
+			t.Fatal("jumping to an older message does not load it")
+		}
+		ml.prependOlder(olderMessagesLoadedMsg{channelID: 1, older: []discord.Message{{ID: 5, ChannelID: 1}, {ID: 10, ChannelID: 1}}, jumpTo: 5})
+		if selected(ml) != 5 {
+			t.Fatalf("selected = %d, want 5", selected(ml))
+		}
+	})
+
+	t.Run("newer than the oldest shown but gone", func(t *testing.T) {
+		ml := newTestModel(t, testConfig(t))
+		ml.setMessages([]discord.Message{{ID: 30, ChannelID: 1}, {ID: 20, ChannelID: 1}})
+		if command := ml.JumpTo(1, 25); command != nil {
+			t.Fatal("a message that would be shown was loaded")
+		}
+	})
+
+	t.Run("another channel", func(t *testing.T) {
+		ml := newTestModel(t, testConfig(t))
+		ml.setMessages([]discord.Message{{ID: 30, ChannelID: 1}})
+		if command := ml.JumpTo(2, 5); command != nil || selected(ml) != 0 {
+			t.Fatal("jumped in a channel not shown")
+		}
+	})
+}

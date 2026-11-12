@@ -485,6 +485,11 @@ func (m *Model) prependOlder(msg olderMessagesLoadedMsg) tview.Cmd {
 	}
 
 	m.rebuildItems()
+	if msg.jumpTo.IsValid() {
+		if index := m.indexOf(msg.channelID, msg.jumpTo); index != -1 {
+			m.setCursor(index)
+		}
+	}
 	if selectedChannel.GuildID.IsValid() {
 		return cmd.Batch{m.requestGuildMembers(selectedChannel.GuildID, msg.older), m.LoadImages()}
 	}
@@ -653,6 +658,8 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 			return m, m.reply(true)
 		case keybind.Matches(msg, keybinds.Edit.Keybind):
 			return m, m.editSelectedMessage()
+		case keybind.Matches(msg, keybinds.Search.Keybind):
+			return m, m.search()
 		case keybind.Matches(msg, keybinds.Delete.Keybind, keybinds.DeleteConfirm.Keybind):
 			// A deleted message that was kept has nothing left to delete, and is dropped instead.
 			if m.forgetSelected() {

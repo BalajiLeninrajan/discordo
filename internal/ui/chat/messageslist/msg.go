@@ -19,6 +19,8 @@ type Msg interface{ isMsg() }
 type olderMessagesLoadedMsg struct {
 	channelID discord.ChannelID
 	older     []discord.Message
+	// jumpTo is the message among them to select, if valid.
+	jumpTo discord.MessageID
 }
 
 func (olderMessagesLoadedMsg) isMsg() {}
@@ -49,6 +51,70 @@ func (m Model) showReactions() tview.Cmd {
 	}
 	msg := ShowReactionsMsg{m.channel.GuildID, message.ChannelID, message.ID}
 	return cmd.Task(func() tview.Msg { return msg })
+}
+
+// SearchMsg asks to search the messages of Channel.
+type SearchMsg struct{ Channel *discord.Channel }
+
+func (m Model) search() tview.Cmd {
+	if m.channel == nil {
+		return nil
+	}
+	msg := SearchMsg{Channel: m.channel}
+	return cmd.Task(func() tview.Msg { return msg })
+}
+
+const (
+	// maxJumpPages is how many pages of older messages JumpTo loads at most to reach a message, as each is a request.
+	maxJumpPages = 20
+	// maxMessagesPerRequest is the most messages Discord sends for one request.
+	maxMessagesPerRequest = 100
+)
+
+// JumpTo selects the message with id in channelID, first loading the older messages up to it if it is older than those shown.
+func (m *Model) JumpTo(channelID discord.ChannelID, id discord.MessageID) tview.Cmd {
+	if index := m.indexOf(channelID, id); index != -1 {
+		m.setCursor(index)
+		return nil
+	}
+
+	if m.channel == nil || m.channel.ID != channelID {
+		return nil
+	}
+	first := m.messageIndex(-1, 1)
+	// A message newer than the oldest shown would be shown, unless it was deleted.
+	if first == -1 || id > m.items[first].message.ID {
+		return nil
+	}
+
+	before := m.items[first].message.ID
+	return cmd.Task(func() tview.Msg {
+		var older []discord.Message
+		for range maxJumpPages {
+			messages, err := m.state.MessagesBefore(channelID, before, maxMessagesPerRequest)
+			if err != nil {
+				slog.Error("failed to fetch older messages", "channel_id", channelID, "err", err)
+				return nil
+			}
+			if len(messages) == 0 {
+				break
+			}
+
+			// Each page is newest first, so the last is the oldest.
+			older = append(older, messages...)
+			before = messages[len(messages)-1].ID
+			if before <= id {
+				break
+			}
+		}
+
+		if !slices.ContainsFunc(older, func(message discord.Message) bool { return message.ID == id }) {
+			slog.Warn("message to jump to is too far back or gone", "channel_id", channelID, "message_id", id)
+			return nil
+		}
+		slices.Reverse(older)
+		return olderMessagesLoadedMsg{channelID: channelID, older: older, jumpTo: id}
+	})
 }
 
 // EditMsg asks to edit a message.

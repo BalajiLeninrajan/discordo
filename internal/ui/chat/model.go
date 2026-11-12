@@ -26,6 +26,7 @@ import (
 	"github.com/ayn2op/discordo/internal/ui/chat/composer"
 	"github.com/ayn2op/discordo/internal/ui/chat/guildstree"
 	"github.com/ayn2op/discordo/internal/ui/chat/memberstree"
+	"github.com/ayn2op/discordo/internal/ui/chat/messagesearch"
 	"github.com/ayn2op/discordo/internal/ui/chat/messageslist"
 	"github.com/ayn2op/discordo/internal/ui/chat/reactionspicker"
 	"github.com/ayn2op/discordo/internal/ui/images"
@@ -62,6 +63,8 @@ type Model struct {
 	attachmentsPicker attachmentspicker.Model
 	// reactionsPicker picks an emoji to react to the selected message with.
 	reactionsPicker reactionspicker.Model
+	// messageSearch searches the messages of the selected channel.
+	messageSearch messagesearch.Model
 
 	selectedChannel *discord.Channel
 	// windowUnfocused reports whether the terminal window lost focus.
@@ -128,6 +131,7 @@ func NewModel(cfg *config.Config, token string) Model {
 	m.channelsPicker = channelspicker.NewModel(cfg)
 	m.attachmentsPicker = attachmentspicker.NewModel(cfg)
 	m.reactionsPicker = reactionspicker.NewModel(cfg, m.state)
+	m.messageSearch = messagesearch.NewModel(cfg, m.state)
 
 	m.guildsTreeVisible = cfg.Sidebar.Visible
 	m.membersTreeVisible = cfg.MembersTree.Visible
@@ -149,6 +153,7 @@ const (
 	overlayChannelsPicker
 	overlayAttachmentsPicker
 	overlayReactionsPicker
+	overlayMessageSearch
 )
 
 // pickerView returns the view of the picker shown on top, or nil if none is open.
@@ -160,6 +165,8 @@ func (m Model) pickerView() tview.Widget {
 		return m.attachmentsPicker.View()
 	case overlayReactionsPicker:
 		return m.reactionsPicker.View()
+	case overlayMessageSearch:
+		return m.messageSearch.View()
 	default:
 		return nil
 	}
@@ -313,6 +320,21 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 	case reactionspicker.CancelMsg:
 		m.overlay = overlayNone
 		return m, nil
+	case messageslist.SearchMsg:
+		m.messageSearch.Open(msg.Channel)
+		m.overlay = overlayMessageSearch
+		return m, nil
+	case messagesearch.SelectedMsg:
+		m.overlay = overlayNone
+		m.setFocus(paneMessagesList)
+		return m, m.messagesList.JumpTo(msg.ChannelID, msg.MessageID)
+	case messagesearch.CancelMsg:
+		m.overlay = overlayNone
+		return m, nil
+	case messagesearch.Msg:
+		var command tview.Cmd
+		m.messageSearch, command = m.messageSearch.Update(msg)
+		return m, command
 	case messageslist.ReplyMsg:
 		m.composer.StartReply(msg.Message, msg.Name, msg.Mention)
 		m.setFocus(paneComposer)
@@ -398,6 +420,8 @@ func (m *Model) route(msg tview.Msg) tview.Cmd {
 		m.attachmentsPicker, cmd = m.attachmentsPicker.Update(msg)
 	case overlayReactionsPicker:
 		m.reactionsPicker, cmd = m.reactionsPicker.Update(msg)
+	case overlayMessageSearch:
+		m.messageSearch, cmd = m.messageSearch.Update(msg)
 	default:
 		cmd = m.updatePane(m.focused, msg)
 	}
