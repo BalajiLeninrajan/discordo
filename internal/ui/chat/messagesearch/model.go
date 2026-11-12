@@ -175,7 +175,7 @@ func (m *Model) search(offset uint) tview.Cmd {
 		if channel.GuildID.IsValid() {
 			endpoint = api.EndpointGuilds + channel.GuildID.String() + "/messages/search"
 		}
-		response, err := m.state.Client.RequestJSON[api.SearchResponse]("GET", endpoint, httputil.WithSchema(m.state.Client, data))
+		response, err := m.state.RequestJSON[api.SearchResponse]("GET", endpoint, httputil.WithSchema(m.state.Client, data))
 		if err != nil {
 			slog.Error("failed to search messages", "channel_id", channel.ID, "err", err)
 			return resultsMsg{request: request, offset: offset, err: err}
