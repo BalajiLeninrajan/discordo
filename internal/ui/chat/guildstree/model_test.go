@@ -221,6 +221,17 @@ func TestModelUnreadChannels(t *testing.T) {
 	if got := m.unreadChannels(nil); got != nil {
 		t.Errorf("unreadChannels(nil) = %v, want none", got)
 	}
+
+	if got := m.categoryUnread(category); got != ningen.ChannelUnread {
+		t.Errorf("categoryUnread = %v, want %v", got, ningen.ChannelUnread)
+	}
+	if got, want := m.channelNodeStyle(category), unreadStyle(ningen.ChannelUnread); got != want {
+		t.Errorf("category style = %v, want %v", got, want)
+	}
+	empty := discord.Channel{ID: 15, GuildID: guild.ID, Type: discord.GuildCategory, Name: "empty"}
+	if got := m.categoryUnread(empty); got != ningen.ChannelRead {
+		t.Errorf("categoryUnread of an empty category = %v, want %v", got, ningen.ChannelRead)
+	}
 }
 
 func TestModelChannelUnreadDirectMessages(t *testing.T) {
