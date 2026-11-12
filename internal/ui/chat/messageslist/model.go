@@ -609,14 +609,24 @@ func (m Model) Init() tview.Cmd {
 // Update returns m changed in response to msg and a command to run, or nil.
 func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 	m, command := m.update(msg)
-	// Keys, scrolling and clicks can bring messages into view.
-	switch msg.(type) {
-	case tview.KeyMsg, scrollMsg, listMsg:
+	if m.bringsIntoView(msg) {
 		if queue := m.queueReactors(); queue != nil {
 			return m, cmd.Batch{command, queue}
 		}
 	}
 	return m, command
+}
+
+// bringsIntoView reports whether msg can bring other messages into view: scrolling, a click, or a key that moves the selection.
+func (m Model) bringsIntoView(msg tview.Msg) bool {
+	switch msg := msg.(type) {
+	case scrollMsg, listMsg:
+		return true
+	case tview.KeyMsg:
+		keybinds := m.cfg.Keybinds.MessagesList
+		return keybind.Matches(msg, keybinds.SelectUp.Keybind, keybinds.SelectDown.Keybind, keybinds.SelectTop.Keybind, keybinds.SelectBottom.Keybind, keybinds.SelectReply.Keybind)
+	}
+	return false
 }
 
 func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {

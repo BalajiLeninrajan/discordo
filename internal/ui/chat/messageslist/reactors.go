@@ -23,8 +23,8 @@ const (
 	maxQueuedReactions = 10
 	// queuePause is how long the queue waits after each request, to keep clear of Discord's rate limits.
 	queuePause = 250 * time.Millisecond
-	// fallbackWidth and fallbackHeight are the size the list is taken to have before it is scrolled, which is when the viewport reports it.
-	fallbackWidth, fallbackHeight = 80, 40
+	// guessedMessages is how many messages are taken to be in view before the list reports its size, which it does once it is scrolled.
+	guessedMessages = 15
 )
 
 // reactorsLoadedMsg says who reacted to a message, by emoji. queued reports whether the queue asked, which then goes on to the next message.
@@ -112,42 +112,65 @@ func (m Model) nextReactors() tview.Cmd {
 }
 
 // visibleMessages returns the indexes of the messages in view, and of those around the selection, which the list keeps in the middle, newest first.
+// It lays out the items from the newest only as far up as those, at the width the list was drawn at, so that their wrapped text stays cached for drawing.
 func (m Model) visibleMessages() []int {
 	view := m.scrollState.Viewport()
 	width, height := view.Bounds().Width, view.Bounds().Height
 	if width <= 0 || height <= 0 {
-		width, height = fallbackWidth, fallbackHeight
+		return m.guessVisibleMessages()
 	}
 
-	// The rows of each item from the top, as the list lays them out.
+	// Rows are counted up from the bottom, which the list is anchored at.
 	limits := layout.Limits{Max: layout.Size{Width: width}, Infinite: layout.Axes{Height: true}}
-	starts, ends := make([]int, len(m.items)), make([]int, len(m.items))
-	total := 0
-	for index := range m.items {
-		if index > 0 && !m.items[index].grouped {
-			total += int(m.cfg.UI.MessagesList.Spacing)
-		}
-		starts[index] = total
-		total += m.buildItem(index).Layout(limits).Height
-		ends[index] = total
-	}
-
-	// The list is anchored at the bottom, so the viewport is scrolled up from the end.
 	scrolled := view.AbsoluteOffset().Y
-	windows := [][2]int{{total - scrolled - height, total - scrolled}}
-	if m.cursor >= 0 && m.cursor < len(m.items) {
-		middle := (starts[m.cursor] + ends[m.cursor]) / 2
-		windows = append(windows, [2]int{middle - height/2, middle + height/2 + 1})
+	windows := [][2]int{{scrolled, scrolled + height}}
+	upTo := scrolled + height
+	bottoms, tops := make([]int, len(m.items)), make([]int, len(m.items))
+	last, below := len(m.items), 0
+	for index := len(m.items) - 1; index >= 0; index-- {
+		bottoms[index] = below
+		below += m.buildItem(index).Layout(limits).Height
+		tops[index] = below
+		last = index
+		if index == m.cursor {
+			middle := (bottoms[index] + tops[index]) / 2
+			windows = append(windows, [2]int{middle - height/2, middle + height/2 + 1})
+			upTo = max(upTo, middle+height/2+1)
+		}
+		if below >= upTo && index <= max(m.cursor, 0) {
+			break
+		}
+		// The spacing above an item that starts a group.
+		if index > 0 && !m.items[index].grouped {
+			below += int(m.cfg.UI.MessagesList.Spacing)
+		}
 	}
 
 	var visible []int
+	for index := len(m.items) - 1; index >= last; index-- {
+		if m.items[index].separator != nil {
+			continue
+		}
+		if slices.ContainsFunc(windows, func(w [2]int) bool { return bottoms[index] < w[1] && tops[index] > w[0] }) {
+			visible = append(visible, index)
+		}
+	}
+	return visible
+}
+
+// guessVisibleMessages returns the newest messages, and those around the selection, by count, before the list reports its size by scrolling.
+func (m Model) guessVisibleMessages() []int {
+	var visible []int
+	newest := 0
 	for index := len(m.items) - 1; index >= 0; index-- {
 		if m.items[index].separator != nil {
 			continue
 		}
-		if slices.ContainsFunc(windows, func(w [2]int) bool { return starts[index] < w[1] && ends[index] > w[0] }) {
+		near := m.cursor >= 0 && index >= m.cursor-guessedMessages/2 && index <= m.cursor+guessedMessages/2
+		if newest < guessedMessages || near {
 			visible = append(visible, index)
 		}
+		newest++
 	}
 	return visible
 }
