@@ -9,6 +9,7 @@ import (
 
 	"github.com/ayn2op/arikawa/v3/api"
 	"github.com/ayn2op/arikawa/v3/discord"
+	"github.com/ayn2op/arikawa/v3/utils/httputil"
 	"github.com/ayn2op/discordo/internal/config"
 	"github.com/ayn2op/discordo/internal/ui"
 	"github.com/ayn2op/ningen/v3"
@@ -35,7 +36,7 @@ type Model struct {
 	suggestion int
 	// searched is the query the results are for, or "" before a search, and data what it asked Discord for.
 	searched string
-	data     api.SearchData
+	data     searchData
 	// problem is why the query cannot be searched for, such as a user not found, or "".
 	problem string
 	// results are the matching messages loaded so far, newest first, of total.
@@ -169,13 +170,12 @@ func (m *Model) search(offset uint) tview.Cmd {
 	data := m.data
 	data.Offset = offset
 	return cmd.Task(func() tview.Msg {
-		var response api.SearchResponse
-		var err error
+		// The search of a guild's channel goes through the guild, and that of a DM through the channel.
+		endpoint := api.EndpointChannels + channel.ID.String() + "/messages/search"
 		if channel.GuildID.IsValid() {
-			response, err = m.state.Search(channel.GuildID, data)
-		} else {
-			response, err = m.state.SearchDirectMessages(data)
+			endpoint = api.EndpointGuilds + channel.GuildID.String() + "/messages/search"
 		}
+		response, err := m.state.Client.RequestJSON[api.SearchResponse]("GET", endpoint, httputil.WithSchema(m.state.Client, data))
 		if err != nil {
 			slog.Error("failed to search messages", "channel_id", channel.ID, "err", err)
 			return resultsMsg{request: request, offset: offset, err: err}
