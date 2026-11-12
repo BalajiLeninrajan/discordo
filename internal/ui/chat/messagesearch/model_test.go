@@ -179,9 +179,10 @@ func TestSnippet(t *testing.T) {
 	}
 }
 
-func TestModelView(t *testing.T) {
-	const width, height = 60, 12
-	screen, err := tcell.NewTerminfoScreenFromTty(vt.NewMockTerm(vt.MockOptSize{X: width, Y: height}))
+// draw returns m drawn on a screen of width by height cells, a line per row.
+func draw(t *testing.T, m Model, width, height int) string {
+	t.Helper()
+	screen, err := tcell.NewTerminfoScreenFromTty(vt.NewMockTerm(vt.MockOptSize{X: vt.Col(width), Y: vt.Row(height)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,11 +190,6 @@ func TestModelView(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(screen.Fini)
-
-	m := searched(t, "lunch", []discord.Message{
-		{ID: 5, ChannelID: 1, Author: discord.User{Username: "alice"}, Content: "lunch at\nnoon?", Timestamp: discord.NowTimestamp()},
-		{ID: 4, ChannelID: 1, Author: discord.User{Username: "bob"}, Attachments: make([]discord.Attachment, 2), Timestamp: discord.NowTimestamp()},
-	}, 7)
 	m.View().Draw(screen, tview.Rectangle{Width: width, Height: height})
 
 	var drawn strings.Builder
@@ -204,9 +200,29 @@ func TestModelView(t *testing.T) {
 		}
 		drawn.WriteByte('\n')
 	}
-	for _, want := range []string{"> lunch", "alice", "lunch at noon?", "bob", "[2 attachments]", "1 of 7"} {
-		if !strings.Contains(drawn.String(), want) {
-			t.Errorf("%q is not drawn in:\n%s", want, drawn.String())
+	return drawn.String()
+}
+
+func TestModelView(t *testing.T) {
+	t.Run("results", func(t *testing.T) {
+		m := searched(t, "lunch", []discord.Message{
+			{ID: 5, ChannelID: 1, Author: discord.User{Username: "alice"}, Content: "lunch at\nnoon?", Timestamp: discord.NowTimestamp()},
+			{ID: 4, ChannelID: 1, Author: discord.User{Username: "bob"}, Attachments: make([]discord.Attachment, 2), Timestamp: discord.NowTimestamp()},
+		}, 7)
+		drawn := draw(t, m, 60, 12)
+		for _, want := range []string{"> lunch", "alice", "lunch at noon?", "bob", "[2 attachments]", "1 of 7"} {
+			if !strings.Contains(drawn, want) {
+				t.Errorf("%q is not drawn in:\n%s", want, drawn)
+			}
 		}
-	}
+	})
+
+	t.Run("suggestions", func(t *testing.T) {
+		drawn := draw(t, newTestModel(t), 60, 12)
+		for _, want := range []string{"from: user", "has: link", "after: date", "Enter searches, tab completes"} {
+			if !strings.Contains(drawn, want) {
+				t.Errorf("%q is not drawn in:\n%s", want, drawn)
+			}
+		}
+	})
 }

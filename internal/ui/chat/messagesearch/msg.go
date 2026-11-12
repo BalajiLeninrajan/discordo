@@ -39,5 +39,11 @@ type cursorMsg int
 // scrollMsg scrolls the results.
 type scrollMsg viewport.ScrollState
 
-// submitMsg searches for the query, or shows the selected result if it is what the results are for.
+// submitMsg completes the filter the cursor is in if it is unfinished, or else searches for the query, or shows the selected result if it is what the results are for.
 type submitMsg struct{}
+
+// suggestionMsg is the suggestion to select.
+type suggestionMsg int
+
+// completeMsg completes the word the cursor is in with the selected suggestion.
+type completeMsg struct{}
