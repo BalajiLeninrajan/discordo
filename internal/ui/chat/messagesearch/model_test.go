@@ -92,12 +92,12 @@ func TestModelSubmit(t *testing.T) {
 	})
 
 	t.Run("retries a failed search", func(t *testing.T) {
-		m, command := update(newTestModel(t), queryMsg{query: "hello", cursor: 5}, submitMsg{})
+		m, _ := update(newTestModel(t), queryMsg{query: "hello", cursor: 5}, submitMsg{})
 		m, _ = m.Update(resultsMsg{request: m.request, err: errors.New("rate limited")})
 		if m.status() != "Search failed" {
 			t.Fatalf("status = %q", m.status())
 		}
-		if m, command = m.Update(submitMsg{}); command == nil || !m.loading {
+		if m, command := m.Update(submitMsg{}); command == nil || !m.loading {
 			t.Fatal("submitting after a failure does not search again")
 		}
 	})
