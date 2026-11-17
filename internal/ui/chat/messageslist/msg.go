@@ -1,6 +1,7 @@
 package messageslist
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"slices"
@@ -64,14 +65,32 @@ func (m Model) search() tview.Cmd {
 	return cmd.Task(func() tview.Msg { return msg })
 }
 
-const (
-	// maxJumpPages is how many pages of older messages JumpTo loads at most to reach a message, as each is a request.
-	maxJumpPages = 20
-	// maxMessagesPerRequest is the most messages Discord sends for one request.
-	maxMessagesPerRequest = 100
-)
+// maxMessagesPerRequest is the most messages Discord sends for one request.
+const maxMessagesPerRequest = 100
 
-// JumpTo selects the message with id in channelID, first loading the older messages up to it if it is older than those shown.
+// windowLoadedMsg carries messages of a channel, oldest first, around one to jump to or the newest.
+type windowLoadedMsg struct {
+	channelID discord.ChannelID
+	messages  []discord.Message
+	// jumpTo is the message among them to select, if valid, and newest reports whether they are the newest of the channel.
+	jumpTo discord.MessageID
+	newest bool
+}
+
+func (windowLoadedMsg) isMsg() {}
+
+// newerMessagesLoadedMsg carries the messages after the message with ID after, oldest first.
+type newerMessagesLoadedMsg struct {
+	channelID discord.ChannelID
+	after     discord.MessageID
+	newer     []discord.Message
+	// caughtUp reports whether they are the newest of the channel.
+	caughtUp bool
+}
+
+func (newerMessagesLoadedMsg) isMsg() {}
+
+// JumpTo selects the message with id in channelID. One that is not loaded is loaded with the messages around it, in one request however far back it is.
 func (m *Model) JumpTo(channelID discord.ChannelID, id discord.MessageID) tview.Cmd {
 	if index := m.indexOf(channelID, id); index != -1 {
 		m.setCursor(index)
@@ -81,39 +100,68 @@ func (m *Model) JumpTo(channelID discord.ChannelID, id discord.MessageID) tview.
 	if m.channel == nil || m.channel.ID != channelID {
 		return nil
 	}
-	first := m.messageIndex(-1, 1)
-	// A message newer than the oldest shown would be shown, unless it was deleted.
-	if first == -1 || id > m.items[first].message.ID {
+	first, last := m.messageIndex(-1, 1), m.messageIndex(len(m.items), -1)
+	// A message between the oldest and newest loaded would be shown, unless it was deleted.
+	if first != -1 && id > m.items[first].message.ID && (!m.newerUnloaded || id < m.items[last].message.ID) {
 		return nil
 	}
 
-	before := m.items[first].message.ID
 	return cmd.Task(func() tview.Msg {
-		var older []discord.Message
-		for range maxJumpPages {
-			messages, err := m.state.MessagesBefore(channelID, before, maxMessagesPerRequest)
-			if err != nil {
-				slog.Error("failed to fetch older messages", "channel_id", channelID, "err", err)
-				return nil
-			}
-			if len(messages) == 0 {
-				break
-			}
-
-			// Each page is newest first, so the last is the oldest.
-			older = append(older, messages...)
-			before = messages[len(messages)-1].ID
-			if before <= id {
-				break
-			}
-		}
-
-		if !slices.ContainsFunc(older, func(message discord.Message) bool { return message.ID == id }) {
-			slog.Warn("message to jump to is too far back or gone", "channel_id", channelID, "message_id", id)
+		messages, err := m.state.MessagesAround(channelID, id, maxMessagesPerRequest)
+		if err != nil {
+			slog.Error("failed to fetch messages around message", "channel_id", channelID, "message_id", id, "err", err)
 			return nil
 		}
-		slices.Reverse(older)
-		return olderMessagesLoadedMsg{channelID: channelID, older: older, jumpTo: id}
+		if !slices.ContainsFunc(messages, func(message discord.Message) bool { return message.ID == id }) {
+			slog.Warn("message to jump to is gone", "channel_id", channelID, "message_id", id)
+			return nil
+		}
+		return windowLoadedMsg{channelID: channelID, messages: oldestFirst(messages), jumpTo: id}
+	})
+}
+
+// oldestFirst returns messages sorted by ID, which Discord sends newest first.
+func oldestFirst(messages []discord.Message) []discord.Message {
+	messages = slices.Clone(messages)
+	slices.SortFunc(messages, func(a, b discord.Message) int { return cmp.Compare(a.ID, b.ID) })
+	return messages
+}
+
+// fetchNewest loads the newest messages of the selected channel, to show in place of older ones loaded by a jump, and selects the newest if sel is set.
+func (m Model) fetchNewest(sel bool) tview.Cmd {
+	if m.channel == nil {
+		return nil
+	}
+	channelID, limit := m.channel.ID, uint(m.cfg.MessagesLimit)
+	return cmd.Task(func() tview.Msg {
+		messages, err := m.state.Messages(channelID, limit)
+		if err != nil {
+			slog.Error("failed to fetch newest messages", "channel_id", channelID, "err", err)
+			return nil
+		}
+		msg := windowLoadedMsg{channelID: channelID, messages: oldestFirst(messages), newest: true}
+		if sel && len(msg.messages) > 0 {
+			msg.jumpTo = msg.messages[len(msg.messages)-1].ID
+		}
+		return msg
+	})
+}
+
+// fetchNewerMessages loads the messages after the newest loaded, if a jump left newer ones unloaded.
+func (m Model) fetchNewerMessages() tview.Cmd {
+	last := m.messageIndex(len(m.items), -1)
+	if !m.newerUnloaded || m.channel == nil || last == -1 {
+		return nil
+	}
+
+	channelID, after, limit := m.channel.ID, m.items[last].message.ID, uint(m.cfg.MessagesLimit)
+	return cmd.Task(func() tview.Msg {
+		messages, err := m.state.MessagesAfter(channelID, after, limit)
+		if err != nil {
+			slog.Error("failed to fetch newer messages", "channel_id", channelID, "err", err)
+			return nil
+		}
+		return newerMessagesLoadedMsg{channelID: channelID, after: after, newer: oldestFirst(messages), caughtUp: uint(len(messages)) < limit}
 	})
 }
 
@@ -128,7 +176,7 @@ type scrollMsg viewport.ScrollState
 
 func (m *Model) selectUp() tview.Cmd {
 	if m.cursor == -1 {
-		m.selectBottom()
+		m.selectLast()
 		return nil
 	}
 

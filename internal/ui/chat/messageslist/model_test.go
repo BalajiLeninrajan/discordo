@@ -523,6 +523,16 @@ func TestModelCanReact(t *testing.T) {
 }
 
 func TestModelJumpTo(t *testing.T) {
+	// ids returns the IDs of the messages shown, oldest first.
+	ids := func(ml *Model) []discord.MessageID {
+		var ids []discord.MessageID
+		for _, item := range ml.items {
+			if item.separator == nil {
+				ids = append(ids, item.message.ID)
+			}
+		}
+		return ids
+	}
 	// selected returns the ID of the selected message, or 0 for none.
 	selected := func(ml *Model) discord.MessageID {
 		if message, ok := ml.selectedMessage(); ok {
@@ -545,9 +555,66 @@ func TestModelJumpTo(t *testing.T) {
 		if command := ml.JumpTo(1, 5); command == nil {
 			t.Fatal("jumping to an older message does not load it")
 		}
-		ml.prependOlder(olderMessagesLoadedMsg{channelID: 1, older: []discord.Message{{ID: 5, ChannelID: 1}, {ID: 10, ChannelID: 1}}, jumpTo: 5})
-		if selected(ml) != 5 {
-			t.Fatalf("selected = %d, want 5", selected(ml))
+		// The messages around it reach those shown, so they join them.
+		ml.showWindow(windowLoadedMsg{channelID: 1, messages: []discord.Message{{ID: 5, ChannelID: 1}, {ID: 10, ChannelID: 1}, {ID: 20, ChannelID: 1}}, jumpTo: 5})
+		if selected(ml) != 5 || len(ids(ml)) != 4 || ml.newerUnloaded {
+			t.Fatalf("selected = %d, ids = %v, newer unloaded = %t", selected(ml), ids(ml), ml.newerUnloaded)
+		}
+	})
+
+	t.Run("far older than shown", func(t *testing.T) {
+		ml := newTestModel(t, testConfig(t))
+		ml.setMessages([]discord.Message{{ID: 30, ChannelID: 1}, {ID: 20, ChannelID: 1}})
+		ml.showWindow(windowLoadedMsg{channelID: 1, messages: []discord.Message{{ID: 4, ChannelID: 1}, {ID: 5, ChannelID: 1}, {ID: 6, ChannelID: 1}}, jumpTo: 5})
+		if selected(ml) != 5 || !slices.Equal(ids(ml), []discord.MessageID{4, 5, 6}) || !ml.newerUnloaded {
+			t.Fatalf("selected = %d, ids = %v, newer unloaded = %t", selected(ml), ids(ml), ml.newerUnloaded)
+		}
+
+		t.Run("new messages wait", func(t *testing.T) {
+			ml.AddMessage(discord.Message{ID: 40, ChannelID: 1})
+			if slices.Contains(ids(ml), 40) {
+				t.Fatal("a new message was added after a gap")
+			}
+		})
+		t.Run("newer than loaded", func(t *testing.T) {
+			if command := ml.JumpTo(1, 25); command == nil {
+				t.Fatal("jumping to a newer message that is not loaded does not load it")
+			}
+		})
+		t.Run("stale newer messages", func(t *testing.T) {
+			ml.appendNewer(newerMessagesLoadedMsg{channelID: 1, after: 5, newer: []discord.Message{{ID: 6, ChannelID: 1}}})
+			if len(ids(ml)) != 3 {
+				t.Fatalf("ids = %v", ids(ml))
+			}
+		})
+		t.Run("newer messages", func(t *testing.T) {
+			ml.appendNewer(newerMessagesLoadedMsg{channelID: 1, after: 6, newer: []discord.Message{{ID: 7, ChannelID: 1}}})
+			if !slices.Equal(ids(ml), []discord.MessageID{4, 5, 6, 7}) || selected(ml) != 5 || !ml.newerUnloaded {
+				t.Fatalf("ids = %v, selected = %d, newer unloaded = %t", ids(ml), selected(ml), ml.newerUnloaded)
+			}
+		})
+		t.Run("caught up", func(t *testing.T) {
+			ml.appendNewer(newerMessagesLoadedMsg{channelID: 1, after: 7, newer: []discord.Message{{ID: 8, ChannelID: 1}}, caughtUp: true})
+			if ml.newerUnloaded {
+				t.Fatal("newer messages are still unloaded once caught up")
+			}
+			ml.AddMessage(discord.Message{ID: 40, ChannelID: 1})
+			if !slices.Equal(ids(ml), []discord.MessageID{4, 5, 6, 7, 8, 40}) {
+				t.Fatalf("ids = %v", ids(ml))
+			}
+		})
+	})
+
+	t.Run("newest", func(t *testing.T) {
+		ml := newTestModel(t, testConfig(t))
+		ml.setMessages([]discord.Message{{ID: 30, ChannelID: 1}})
+		ml.showWindow(windowLoadedMsg{channelID: 1, messages: []discord.Message{{ID: 5, ChannelID: 1}}, jumpTo: 5})
+		if command := ml.selectBottom(); command == nil {
+			t.Fatal("selecting the bottom does not load the newest messages")
+		}
+		ml.showWindow(windowLoadedMsg{channelID: 1, messages: []discord.Message{{ID: 30, ChannelID: 1}, {ID: 31, ChannelID: 1}}, jumpTo: 31, newest: true})
+		if !slices.Equal(ids(ml), []discord.MessageID{30, 31}) || selected(ml) != 31 || ml.newerUnloaded {
+			t.Fatalf("ids = %v, selected = %d, newer unloaded = %t", ids(ml), selected(ml), ml.newerUnloaded)
 		}
 	})
 

@@ -50,6 +50,8 @@ type Model struct {
 	// channel is the selected channel, or nil for none.
 	channel *discord.Channel
 	items   []messageItem
+	// newerUnloaded reports whether the messages after the newest loaded are not, as a jump loaded older ones in their place.
+	newerUnloaded bool
 
 	renderer *markdown.Renderer
 	// images are the chat model's, which loads them, by URL.
@@ -168,9 +170,14 @@ func (m *Model) SetChannel(channel *discord.Channel, messages []discord.Message)
 }
 
 // ShowNewest clears the selection and scrolls to the newest message, which then stays in view as messages arrive until the user scrolls up.
-func (m *Model) ShowNewest() {
+// It loads the newest messages if a jump left them unloaded.
+func (m *Model) ShowNewest() tview.Cmd {
 	m.clearSelection()
 	m.scrollState.ScrollToEnd()
+	if m.newerUnloaded {
+		return m.fetchNewest(false)
+	}
+	return nil
 }
 
 // UpdateMessage replaces the shown message with the same ID.
@@ -215,6 +222,7 @@ func (m *Model) clearViews() {
 
 func (m *Model) reset() {
 	m.items = nil
+	m.newerUnloaded = false
 	clear(m.reactors)
 	m.reactorsQueue.reset()
 	m.cursor, m.target = -1, -1
@@ -232,6 +240,11 @@ func (m *Model) setMessages(messages []discord.Message) {
 }
 
 func (m *Model) AddMessage(message discord.Message) tview.Cmd {
+	// It would follow older messages with a gap before it, and is loaded with those newer ones.
+	if m.newerUnloaded {
+		return nil
+	}
+
 	// Appending keeps the items before it as they are, so only the separator of a new day is added rather than all rebuilt.
 	var previous *discord.Message
 	if last := len(m.items) - 1; last >= 0 {
@@ -497,6 +510,128 @@ func (m *Model) prependOlder(msg olderMessagesLoadedMsg) tview.Cmd {
 	return cmd.Batch{m.LoadImages(), m.queueReactors()}
 }
 
+// showWindow shows the messages loaded around one to jump to, or the newest, and selects the one to jump to.
+// Those that reach the messages shown join them, and the others replace them.
+func (m *Model) showWindow(msg windowLoadedMsg) tview.Cmd {
+	channel := m.channel
+	if channel == nil || channel.ID != msg.channelID || len(msg.messages) == 0 {
+		return nil
+	}
+
+	oldest, newest := msg.messages[0].ID, msg.messages[len(msg.messages)-1].ID
+	first, last := m.messageIndex(-1, 1), m.messageIndex(len(m.items), -1)
+	if !msg.newest && first != -1 && oldest <= m.items[last].message.ID && newest >= m.items[first].message.ID {
+		firstID, lastID := m.items[first].message.ID, m.items[last].message.ID
+		var older, newer []discord.Message
+		for _, message := range msg.messages {
+			switch {
+			case message.ID < firstID:
+				older = append(older, message)
+			case message.ID > lastID:
+				newer = append(newer, message)
+			}
+		}
+		var command tview.Cmd
+		if len(newer) > 0 {
+			command = m.appendNewer(newerMessagesLoadedMsg{channelID: msg.channelID, after: lastID, newer: newer})
+		}
+		if len(older) > 0 {
+			return cmd.Batch{command, m.prependOlder(olderMessagesLoadedMsg{channelID: msg.channelID, older: older, jumpTo: msg.jumpTo})}
+		}
+		if index := m.indexOf(msg.channelID, msg.jumpTo); index != -1 {
+			m.setCursor(index)
+		}
+		return cmd.Batch{command, m.queueReactors()}
+	}
+
+	m.items = make([]messageItem, 0, len(msg.messages))
+	for _, message := range msg.messages {
+		m.items = append(m.items, messageItem{message: message})
+	}
+	m.newerUnloaded = !msg.newest
+	// The deleted messages after the newest loaded go in with the newer messages, once they are loaded.
+	before := newest
+	if msg.newest {
+		before = 0
+	}
+	m.items = m.withDeleted(m.items, before)
+	m.cursor, m.target = -1, -1
+	m.rebuildItems()
+	if index := m.indexOf(msg.channelID, msg.jumpTo); index != -1 {
+		m.setCursor(index)
+	} else {
+		m.scrollState.ScrollToEnd()
+	}
+
+	if channel.GuildID.IsValid() {
+		return cmd.Batch{m.requestGuildMembers(channel.GuildID, msg.messages), m.LoadImages(), m.queueReactors()}
+	}
+	return cmd.Batch{m.LoadImages(), m.queueReactors()}
+}
+
+// appendNewer shows the newer messages loaded below the newest shown, which stays in view.
+func (m *Model) appendNewer(msg newerMessagesLoadedMsg) tview.Cmd {
+	channel := m.channel
+	last := m.messageIndex(len(m.items), -1)
+	// The messages are stale if others were loaded after them.
+	if channel == nil || channel.ID != msg.channelID || !m.newerUnloaded || last == -1 || m.items[last].message.ID != msg.after {
+		return nil
+	}
+
+	newer := msg.newer
+	before := discord.MessageID(0)
+	if msg.caughtUp {
+		m.newerUnloaded = false
+		// Messages that arrived while they loaded were not added, and are in the cache.
+		if cached, err := m.state.Cabinet.Messages(channel.ID); err == nil {
+			newest := msg.after
+			if len(newer) > 0 {
+				newest = newer[len(newer)-1].ID
+			}
+			for _, message := range oldestFirst(cached) {
+				if message.ID > newest {
+					newer = append(newer, message)
+				}
+			}
+		}
+	} else if len(newer) > 0 {
+		before = newer[len(newer)-1].ID
+	}
+
+	items := make([]messageItem, 0, len(newer)+1)
+	items = append(items, m.items[last])
+	for _, message := range newer {
+		items = append(items, messageItem{message: message})
+	}
+	// The newest shown leads them so the deleted messages after it go in too.
+	items = m.withDeleted(items, before)[1:]
+	if len(items) == 0 {
+		return nil
+	}
+
+	m.items = append(m.items, items...)
+	// The view is kept from the bottom, so the newest that was shown is scrolled back to rather than left for the newest loaded.
+	if m.cursor < 0 {
+		m.target = last
+	}
+	m.scrollState.ScrollToTarget()
+	m.rebuildItems()
+	if channel.GuildID.IsValid() {
+		return cmd.Batch{m.requestGuildMembers(channel.GuildID, newer), m.LoadImages(), m.queueReactors()}
+	}
+	return cmd.Batch{m.LoadImages(), m.queueReactors()}
+}
+
+// scrolledToBottom reports whether view is scrolled to the newest message shown, which is false while the messages fit, as there is nothing to scroll.
+func scrolledToBottom(view viewport.Viewport) bool {
+	return view.Content().Height > view.Bounds().Height && view.AbsoluteOffset().Y == 0
+}
+
+// atBottom reports whether the newest message shown is selected.
+func (m Model) atBottom() bool {
+	return m.cursor >= 0 && m.cursor == m.messageIndex(len(m.items), -1)
+}
+
 // scrolledToTop reports whether view is scrolled to the oldest message shown, which is false while the messages fit, as there is nothing to scroll.
 func scrolledToTop(view viewport.Viewport) bool {
 	return view.Content().Height > view.Bounds().Height && view.AbsoluteOffsetReversed().Y == 0
@@ -507,12 +642,19 @@ func (m Model) atTop() bool {
 	return m.cursor >= 0 && m.cursor == m.messageIndex(-1, 1)
 }
 
-func (m *Model) selectDown() {
+func (m *Model) selectDown() tview.Cmd {
 	if m.cursor == -1 {
-		m.selectBottom()
+		m.selectLast()
 	} else if next := m.messageIndex(m.cursor, 1); next >= 0 {
 		m.setCursor(next)
+	} else {
+		return nil
 	}
+	// Newer messages are fetched once as the cursor reaches the bottom, rather than on each key press there.
+	if !m.atBottom() {
+		return nil
+	}
+	return m.fetchNewerMessages()
 }
 
 func (m *Model) selectTop() tview.Cmd {
@@ -523,7 +665,17 @@ func (m *Model) selectTop() tview.Cmd {
 	return m.fetchOlderMessages()
 }
 
-func (m *Model) selectBottom() {
+// selectBottom selects the newest message of the channel, first loading the newest in place of those shown if a jump left them unloaded.
+func (m *Model) selectBottom() tview.Cmd {
+	if m.newerUnloaded {
+		return m.fetchNewest(true)
+	}
+	m.selectLast()
+	return nil
+}
+
+// selectLast selects the newest message shown.
+func (m *Model) selectLast() {
 	m.setCursor(m.messageIndex(len(m.items), -1))
 }
 
@@ -643,11 +795,11 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		case keybind.Matches(msg, keybinds.SelectUp.Keybind):
 			return m, m.selectUp()
 		case keybind.Matches(msg, keybinds.SelectDown.Keybind):
-			m.selectDown()
+			return m, m.selectDown()
 		case keybind.Matches(msg, keybinds.SelectTop.Keybind):
 			return m, m.selectTop()
 		case keybind.Matches(msg, keybinds.SelectBottom.Keybind):
-			m.selectBottom()
+			return m, m.selectBottom()
 		case keybind.Matches(msg, keybinds.SelectReply.Keybind):
 			m.selectReply()
 		case keybind.Matches(msg, keybinds.YankID.Keybind):
@@ -694,6 +846,10 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		}
 	case olderMessagesLoadedMsg:
 		return m, m.prependOlder(msg)
+	case windowLoadedMsg:
+		return m, m.showWindow(msg)
+	case newerMessagesLoadedMsg:
+		return m, m.appendNewer(msg)
 	case reactorsLoadedMsg:
 		m.setReactors(msg)
 		if !msg.queued {
@@ -733,12 +889,18 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		if !scrolledToTop(m.scrollState.Origin()) && scrolledToTop(m.scrollState.Viewport()) {
 			return m, m.fetchOlderMessages()
 		}
+		if !scrolledToBottom(m.scrollState.Origin()) && scrolledToBottom(m.scrollState.Viewport()) {
+			return m, m.fetchNewerMessages()
+		}
 	case listMsg:
-		top := m.atTop()
+		top, bottom := m.atTop(), m.atBottom()
 		m.cursor, m.target = int(msg), int(msg)
 		m.onRowCursorChanged(m.cursor)
 		if !top && m.atTop() {
 			return m, m.fetchOlderMessages()
+		}
+		if !bottom && m.atBottom() {
+			return m, m.fetchNewerMessages()
 		}
 	}
 	return m, nil
