@@ -349,8 +349,7 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		}
 		return m, nil
 	case composer.SentMsg:
-		m.messagesList.ShowNewest()
-		return m, nil
+		return m, m.messagesList.ShowNewest()
 	case QuitMsg:
 		return m, closeState(m.state, StateClosedMsg{})
 	case tview.KeyMsg:
