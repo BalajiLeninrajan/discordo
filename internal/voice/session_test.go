@@ -23,10 +23,10 @@ func TestSessionFollow(t *testing.T) {
 		t.Helper()
 
 		state := state.NewWithStore("", defaultstore.New())
-		if err := state.Cabinet.MyselfSet(discord.User{ID: userID}, false); err != nil {
+		if err := state.MyselfSet(discord.User{ID: userID}, false); err != nil {
 			t.Fatal(err)
 		}
-		if err := state.Cabinet.ChannelSet(&discord.Channel{ID: channelID, GuildID: guildID, Type: discord.GuildVoice}, false); err != nil {
+		if err := state.ChannelSet(&discord.Channel{ID: channelID, GuildID: guildID, Type: discord.GuildVoice}, false); err != nil {
 			t.Fatal(err)
 		}
 
