@@ -133,20 +133,26 @@ func (m *Model) rebuild(event *gateway.ReadyEvent) {
 }
 
 func (m Model) refreshReadState(event *read.UpdateEvent) {
-	if event.GuildID.IsValid() {
-		m.refreshGuildNode(event.GuildID)
+	m.refreshChannel(event.GuildID, event.ChannelID)
+}
+
+// refreshChannel shows whether the channel with channelID in the guild with guildID, if any, is unread, and so
+// whether its category and guild or the direct messages are.
+func (m Model) refreshChannel(guildID discord.GuildID, channelID discord.ChannelID) {
+	if guildID.IsValid() {
+		m.refreshGuildNode(guildID)
 	} else if m.dmRootNode != nil {
 		setNodeText(m.dmRootNode, m.dmNodeText())
 		setNodeNameStyle(m.dmRootNode, m.dmNodeStyle())
 	}
 
-	node := m.findNodeByRef(event.ChannelID)
+	node := m.findNodeByRef(channelID)
 	if node == nil {
 		return
 	}
-	channel, err := m.state.Cabinet.Channel(event.ChannelID)
+	channel, err := m.state.Cabinet.Channel(channelID)
 	if err != nil {
-		setNodeNameStyle(node, unreadStyle(m.channelUnread(event.ChannelID)))
+		setNodeNameStyle(node, ui.UnreadStyle(m.channelUnread(channelID)))
 		return
 	}
 
@@ -222,15 +228,15 @@ func (m Model) createFolderNode(folder gateway.GuildFolder, guildsByID map[disco
 
 func (m Model) guildNodeStyle(guildID discord.GuildID) tview.Style {
 	indication := m.state.GuildIsUnread(guildID, ningen.GuildUnreadOpts{IncludeMutedCategories: true})
-	return unreadStyle(indication)
+	return ui.UnreadStyle(indication)
 }
 
 func (m Model) channelNodeStyle(channel discord.Channel) tview.Style {
 	if channel.Type == discord.GuildCategory {
-		return unreadStyle(m.categoryUnread(channel))
+		return ui.UnreadStyle(m.categoryUnread(channel))
 	}
 
-	unread := unreadStyle(m.channelUnread(channel.ID))
+	unread := ui.UnreadStyle(m.channelUnread(channel.ID))
 	if channel.Type != discord.DirectMessage || len(channel.DMRecipients) != 1 {
 		return unread
 	}
@@ -502,7 +508,8 @@ func (m Model) expandable(node *tree.Node) bool {
 	return len(node.Children()) > 0 && !m.hasMessages(node)
 }
 
-// hasMessages reports whether node is a channel that selecting opens, which a category or forum is not.
+// hasMessages reports whether node is a channel that selecting opens: its messages, or the posts of a forum. A
+// category is not.
 func (m Model) hasMessages(node *tree.Node) bool {
 	channelID, ok := node.Reference().(discord.ChannelID)
 	if !ok {
@@ -514,7 +521,7 @@ func (m Model) hasMessages(node *tree.Node) bool {
 		return false
 	}
 
-	return channel.Type != discord.GuildCategory && channel.Type != discord.GuildForum
+	return channel.Type != discord.GuildCategory
 }
 
 func isVoice(channelType discord.ChannelType) bool {
@@ -734,7 +741,40 @@ func (m Model) findNodeByChannelID(channelID discord.ChannelID) *tree.Node {
 		m.selectNode(parent)
 	}
 
+	if node := m.findNodeByRef(channelID); node != nil || !isThread(channel.Type) {
+		return node
+	}
+
+	// A post of a forum opened from its posts is shown only once it is.
+	m.addThread(*channel)
 	return m.findNodeByRef(channelID)
+}
+
+// addThread adds the node of thread under that of the channel it is in, if that is shown and it is not. A new post of
+// a forum makes the forum unread, and comes first.
+func (m Model) addThread(thread discord.Channel) {
+	parent, err := m.state.Cabinet.Channel(thread.ParentID)
+	forum := err == nil && parent.Type == discord.GuildForum
+	// Discord tells of a new post only by the post, so the forum's newest post is not updated otherwise.
+	if postID := discord.MessageID(thread.ID); forum && postID > parent.LastMessageID {
+		parent.LastMessageID = postID
+		if err := m.state.Cabinet.ChannelSet(parent, true); err != nil {
+			slog.Error("failed to set the newest post of a forum", "channel_id", parent.ID, "err", err)
+		}
+		defer m.refreshChannel(parent.GuildID, parent.ID)
+	}
+
+	parentNode := m.channelNodes[thread.ParentID]
+	if parentNode == nil || m.channelNodes[thread.ID] != nil {
+		return
+	}
+
+	m.createChannelNode(parentNode, thread)
+	if node := m.channelNodes[thread.ID]; node != nil && forum {
+		children := parentNode.Children()
+		copy(children[1:], children[:len(children)-1])
+		children[0] = node
+	}
 }
 
 func (m Model) expandPathToNode(node *tree.Node) {
@@ -794,21 +834,7 @@ func (m Model) dmUnread() ningen.UnreadIndication {
 
 // dmNodeStyle returns the style of the direct messages node, which shows whether any of them are unread.
 func (m Model) dmNodeStyle() tview.Style {
-	return unreadStyle(m.dmUnread())
-}
-
-func unreadStyle(indication ningen.UnreadIndication) tview.Style {
-	var style tview.Style
-	switch indication {
-	case ningen.ChannelRead:
-		style = style.Dim(true)
-	case ningen.ChannelMentioned:
-		style = style.Underline(true)
-		fallthrough
-	case ningen.ChannelUnread:
-		style = style.Bold(true)
-	}
-	return style
+	return ui.UnreadStyle(m.dmUnread())
 }
 
 var _ tview.Model[Model] = Model{}
@@ -837,6 +863,9 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		return m, nil
 	case *read.UpdateEvent:
 		m.refreshReadState(msg)
+		return m, nil
+	case *gateway.ThreadCreateEvent:
+		m.addThread(msg.Channel)
 		return m, nil
 	case *gateway.VoiceStateUpdateEvent:
 		m.showVoiceMembers(msg.GuildID)

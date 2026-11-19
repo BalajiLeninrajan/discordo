@@ -26,7 +26,11 @@ func (m Model) FullHelp() [][]keybind.Keybind {
 }
 
 func (m Model) activeKeyMap() help.KeyMap {
-	if m.overlay != overlayNone {
+	switch m.overlay {
+	case overlayNone:
+	case overlayForumPosts:
+		return m.forumPosts
+	default:
 		return m.cfg.Keybinds.Picker
 	}
 

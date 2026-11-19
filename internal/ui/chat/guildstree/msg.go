@@ -29,6 +29,9 @@ type ChannelLoadedMsg struct {
 
 type NavigateMsg struct{ ChannelID discord.ChannelID }
 
+// OpenForumMsg asks to show the posts of Forum.
+type OpenForumMsg struct{ Forum discord.Channel }
+
 // VoiceMsg is sent when who is speaking or the state of the voice channel joined changes.
 type VoiceMsg struct{}
 
@@ -83,7 +86,8 @@ func (m Model) expandGuild(node *tree.Node, guildID discord.GuildID) {
 	node.Expand()
 }
 
-// selectChannel loads the messages of the channel, or shows the threads of a forum.
+// selectChannel loads the messages of the channel, or shows the posts of a forum. Either way, the threads under it
+// show as it opens.
 func (m Model) selectChannel(node *tree.Node, channelID discord.ChannelID) tview.Cmd {
 	channel, err := m.state.Cabinet.Channel(channelID)
 	if err != nil {
@@ -91,32 +95,34 @@ func (m Model) selectChannel(node *tree.Node, channelID discord.ChannelID) tview
 		return nil
 	}
 
-	if channel.Type != discord.GuildForum {
-		// Show the threads of the channel as it opens.
-		if len(node.Children()) > 0 {
-			node.Expand()
-		}
-		return loadChannel(m.state, uint(m.cfg.MessagesLimit), *channel)
+	if channel.Type == discord.GuildForum && len(node.Children()) == 0 {
+		m.addThreads(node, *channel)
+	}
+	if len(node.Children()) > 0 {
+		node.Expand()
 	}
 
-	m.expandForum(node, *channel)
-	return nil
+	if channel.Type == discord.GuildForum {
+		forum := *channel
+		return cmd.Task(func() tview.Msg { return OpenForumMsg{Forum: forum} })
+	}
+	return loadChannel(m.state, uint(m.cfg.MessagesLimit), *channel)
 }
 
-func (m Model) expandForum(node *tree.Node, forum discord.Channel) {
-	channels, err := m.state.Cabinet.Channels(forum.GuildID)
+// addThreads adds the threads of channel that the state has under node.
+func (m Model) addThreads(node *tree.Node, channel discord.Channel) {
+	channels, err := m.state.Cabinet.Channels(channel.GuildID)
 	if err != nil {
-		slog.Error("failed to get channels for forum threads", "err", err, "guild_id", forum.GuildID)
+		slog.Error("failed to get channels for threads", "err", err, "guild_id", channel.GuildID)
 		return
 	}
 
+	ui.SortGuildChannels(channels)
 	for _, child := range channels {
-		if child.ParentID == forum.ID && isThread(child.Type) {
+		if child.ParentID == channel.ID && isThread(child.Type) {
 			m.createChannelNode(node, child)
 		}
 	}
-
-	node.Expand()
 }
 
 func (m Model) expandPrivateChannels(node *tree.Node) {

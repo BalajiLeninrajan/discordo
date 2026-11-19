@@ -24,6 +24,7 @@ import (
 	"github.com/ayn2op/discordo/internal/ui/chat/attachmentspicker"
 	"github.com/ayn2op/discordo/internal/ui/chat/channelspicker"
 	"github.com/ayn2op/discordo/internal/ui/chat/composer"
+	"github.com/ayn2op/discordo/internal/ui/chat/forumposts"
 	"github.com/ayn2op/discordo/internal/ui/chat/guildstree"
 	"github.com/ayn2op/discordo/internal/ui/chat/memberstree"
 	"github.com/ayn2op/discordo/internal/ui/chat/messagesearch"
@@ -65,6 +66,8 @@ type Model struct {
 	reactionsPicker reactionspicker.Model
 	// messageSearch searches the messages of the selected channel.
 	messageSearch messagesearch.Model
+	// forumPosts lists, searches and starts the posts of a forum.
+	forumPosts forumposts.Model
 
 	selectedChannel *discord.Channel
 	// windowUnfocused reports whether the terminal window lost focus.
@@ -132,6 +135,7 @@ func NewModel(cfg *config.Config, token string) Model {
 	m.attachmentsPicker = attachmentspicker.NewModel(cfg)
 	m.reactionsPicker = reactionspicker.NewModel(cfg, m.state)
 	m.messageSearch = messagesearch.NewModel(cfg, m.state)
+	m.forumPosts = forumposts.NewModel(cfg, m.state)
 
 	m.guildsTreeVisible = cfg.Sidebar.Visible
 	m.membersTreeVisible = cfg.MembersTree.Visible
@@ -154,6 +158,7 @@ const (
 	overlayAttachmentsPicker
 	overlayReactionsPicker
 	overlayMessageSearch
+	overlayForumPosts
 )
 
 // pickerView returns the view of the picker shown on top, or nil if none is open.
@@ -167,6 +172,8 @@ func (m Model) pickerView() tview.Widget {
 		return m.reactionsPicker.View()
 	case overlayMessageSearch:
 		return m.messageSearch.View()
+	case overlayForumPosts:
+		return m.forumPosts.View()
 	default:
 		return nil
 	}
@@ -335,6 +342,29 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		var command tview.Cmd
 		m.messageSearch, command = m.messageSearch.Update(msg)
 		return m, command
+	case guildstree.OpenForumMsg:
+		m.overlay = overlayForumPosts
+		return m, m.forumPosts.Open(msg.Forum)
+	case forumposts.SelectedMsg:
+		m.overlay = overlayNone
+		return m, m.openPost(msg.Post)
+	case forumposts.NewPostMsg:
+		m.overlay = overlayNone
+		m.composer.StartPost(composer.Post{Forum: msg.Forum, Title: msg.Title, Tags: msg.Tags})
+		m.setFocus(paneComposer)
+		return m, nil
+	case forumposts.CancelMsg:
+		m.overlay = overlayNone
+		return m, nil
+	case forumposts.Msg:
+		var command tview.Cmd
+		m.forumPosts, command = m.forumPosts.Update(msg)
+		return m, command
+	case composer.PostedMsg:
+		return m, m.openPost(msg.Post)
+	case composer.PostFailedMsg:
+		m.setFocus(paneComposer)
+		return m, m.updatePane(paneComposer, msg)
 	case messageslist.ReplyMsg:
 		m.composer.StartReply(msg.Message, msg.Name, msg.Mention)
 		m.setFocus(paneComposer)
@@ -421,6 +451,8 @@ func (m *Model) route(msg tview.Msg) tview.Cmd {
 		m.reactionsPicker, cmd = m.reactionsPicker.Update(msg)
 	case overlayMessageSearch:
 		m.messageSearch, cmd = m.messageSearch.Update(msg)
+	case overlayForumPosts:
+		m.forumPosts, cmd = m.forumPosts.Update(msg)
 	default:
 		cmd = m.updatePane(m.focused, msg)
 	}

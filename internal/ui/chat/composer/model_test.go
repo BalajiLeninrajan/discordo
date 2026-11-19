@@ -361,3 +361,72 @@ func TestModelComplete(t *testing.T) {
 		}
 	})
 }
+
+func TestModelPost(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The owner of guild 1 may send anywhere in it.
+	state := ningen.FromState(state.NewWithStore("", defaultstore.New()))
+	channel := discord.Channel{ID: 10, GuildID: 1}
+	forum := discord.Channel{ID: 11, GuildID: 1, Type: discord.GuildForum}
+	for _, err := range []error{
+		state.MyselfSet(discord.User{ID: 3}, false),
+		state.GuildSet(&discord.Guild{ID: 1, OwnerID: 3}, false),
+		state.MemberSet(1, &discord.Member{User: discord.User{ID: 3}}, false),
+		state.RoleSet(1, &discord.Role{ID: 1}, false),
+		state.ChannelSet(&channel, false),
+		state.ChannelSet(&forum, false),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := func() Model {
+		c := NewModel(cfg, state)
+		c.SetChannel(&channel)
+		c.StartPost(Post{Forum: forum, Title: "title"})
+		if c.channel.ID != forum.ID || c.title() != "New post: title" || c.Disabled() || c.canEditLastMessage() {
+			t.Fatalf("channel = %v, title = %q, disabled = %v", c.channel.ID, c.title(), c.Disabled())
+		}
+		return c
+	}
+
+	t.Run("cancel goes back", func(t *testing.T) {
+		c, _ := start().Update(tview.KeyMsg(tcell.NewEventKey(tcell.KeyEscape, "", tcell.ModNone)))
+		if c.post != nil || c.channel.ID != channel.ID {
+			t.Fatalf("post = %v, channel = %v", c.post, c.channel.ID)
+		}
+	})
+
+	t.Run("selecting a channel drops it", func(t *testing.T) {
+		c := start()
+		c.SetChannel(&channel)
+		if c.post != nil || c.title() != "" {
+			t.Fatalf("post = %v, title = %q", c.post, c.title())
+		}
+	})
+
+	t.Run("sending goes back", func(t *testing.T) {
+		c := start()
+		c.setText("hello", 5)
+		if c.send() == nil {
+			t.Fatal("sending the first message does nothing")
+		}
+		if c.post != nil || c.channel.ID != channel.ID || c.text != "" {
+			t.Fatalf("post = %v, channel = %v, text = %q", c.post, c.channel.ID, c.text)
+		}
+	})
+
+	t.Run("a failure gives the message back", func(t *testing.T) {
+		c := NewModel(cfg, state)
+		c.SetChannel(&channel)
+		c, command := c.Update(PostFailedMsg{Post: Post{Forum: forum, Title: "title"}, Text: "hello"})
+		if command == nil || c.post == nil || c.text != "hello" {
+			t.Fatalf("command = %v, post = %v, text = %q", command, c.post, c.text)
+		}
+	})
+}

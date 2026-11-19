@@ -10,8 +10,10 @@ import (
 	"github.com/ayn2op/arikawa/v3/state"
 	"github.com/ayn2op/arikawa/v3/state/store/defaultstore"
 	"github.com/ayn2op/discordo/internal/config"
+	"github.com/ayn2op/discordo/internal/ui"
 	"github.com/ayn2op/ningen/v3"
 	"github.com/ayn2op/ningen/v3/states/read"
+	"github.com/ayn2op/tview/cmd"
 	"github.com/ayn2op/tview/tree"
 )
 
@@ -246,7 +248,7 @@ func TestModelUnreadChannels(t *testing.T) {
 	if got := m.categoryUnread(category); got != ningen.ChannelUnread {
 		t.Errorf("categoryUnread = %v, want %v", got, ningen.ChannelUnread)
 	}
-	if got, want := m.channelNodeStyle(category), unreadStyle(ningen.ChannelUnread); got != want {
+	if got, want := m.channelNodeStyle(category), ui.UnreadStyle(ningen.ChannelUnread); got != want {
 		t.Errorf("category style = %v, want %v", got, want)
 	}
 	empty := discord.Channel{ID: 15, GuildID: guild.ID, Type: discord.GuildCategory, Name: "empty"}
@@ -296,4 +298,97 @@ func TestModelChannelUnreadDirectMessages(t *testing.T) {
 	if got := m.channelUnread(unread.ID); got != ningen.ChannelRead {
 		t.Errorf("channelUnread(unread) after marking it read = %v, want ChannelRead", got)
 	}
+}
+
+// newForumModel returns a model with the guild's channels shown: a forum read up to post 100, in a category, with an
+// old post.
+func newForumModel(t *testing.T) (Model, *ningen.State, discord.Channel) {
+	t.Helper()
+	s := ningen.FromState(state.NewWithStore("", defaultstore.New()))
+	me := discord.User{ID: 2}
+	guild := discord.Guild{ID: 1, Name: "guild", OwnerID: me.ID}
+	category := discord.Channel{ID: 10, GuildID: guild.ID, Type: discord.GuildCategory, Name: "category"}
+	forum := discord.Channel{ID: 11, GuildID: guild.ID, Type: discord.GuildForum, Name: "forum", ParentID: category.ID, LastMessageID: 100}
+	old := discord.Channel{ID: 100, GuildID: guild.ID, Type: discord.GuildPublicThread, Name: "old", ParentID: forum.ID}
+	if err := errors.Join(
+		s.MyselfSet(me, false),
+		s.GuildSet(&guild, false),
+		s.MemberSet(guild.ID, &discord.Member{User: me}, false),
+		s.RoleSet(guild.ID, &discord.Role{ID: discord.RoleID(guild.ID)}, false),
+		s.ChannelSet(&category, false),
+		s.ChannelSet(&forum, false),
+		s.ChannelSet(&old, false),
+	); err != nil {
+		t.Fatal(err)
+	}
+	s.State.Call(&gateway.ReadyEvent{User: me, ReadStates: []gateway.ReadState{{ChannelID: forum.ID, LastMessageID: 100}}})
+
+	cfg := config.Default()
+	m := NewModel(&cfg, s)
+	m.root.ClearChildren()
+	m.createGuildNode(m.root, guild)
+	m.selectNode(m.guildNodes[guild.ID])
+	return m, s, forum
+}
+
+func TestModelForum(t *testing.T) {
+	t.Run("selecting opens the posts", func(t *testing.T) {
+		m, _, forum := newForumModel(t)
+		node := m.channelNodes[forum.ID]
+		if m.expandable(node) {
+			t.Fatal("a forum expands rather than opening its posts")
+		}
+		task, ok := m.selectNode(node).(cmd.Task)
+		if !ok {
+			t.Fatal("selecting a forum does not open its posts")
+		}
+		if msg, ok := task().(OpenForumMsg); !ok || msg.Forum.ID != forum.ID {
+			t.Fatalf("msg = %#v, want the forum's posts opened", msg)
+		}
+		if !node.Expanded() {
+			t.Error("the posts under the forum are not shown")
+		}
+	})
+
+	t.Run("a new post makes the forum unread", func(t *testing.T) {
+		m, s, forum := newForumModel(t)
+		node := m.channelNodes[forum.ID]
+		if got := m.channelUnread(forum.ID); got != ningen.ChannelRead {
+			t.Fatalf("channelUnread before the post = %v, want read", got)
+		}
+
+		post := discord.Channel{ID: 300, GuildID: forum.GuildID, Type: discord.GuildPublicThread, Name: "new", ParentID: forum.ID}
+		// The state takes the post before the model hears of it.
+		if err := s.Cabinet.ChannelSet(&post, false); err != nil {
+			t.Fatal(err)
+		}
+		m, _ = m.Update(&gateway.ThreadCreateEvent{Channel: post, NewlyCreated: true})
+
+		if got := m.channelUnread(forum.ID); got != ningen.ChannelUnread {
+			t.Errorf("channelUnread after the post = %v, want unread", got)
+		}
+		if got, want := node.Spans()[0].Style, ui.UnreadStyle(ningen.ChannelUnread); got != want {
+			t.Errorf("forum style = %v, want %v", got, want)
+		}
+		if children := node.Children(); len(children) != 2 || children[0] != m.channelNodes[post.ID] {
+			t.Errorf("the new post is not first under the forum")
+		}
+	})
+
+	t.Run("navigating shows a post not shown", func(t *testing.T) {
+		m, s, forum := newForumModel(t)
+		// A post that was neither active nor joined, so the state has it only once it is opened.
+		post := discord.Channel{ID: 50, GuildID: forum.GuildID, Type: discord.GuildPublicThread, Name: "archived", ParentID: forum.ID}
+		if err := s.Cabinet.ChannelSet(&post, false); err != nil {
+			t.Fatal(err)
+		}
+		node := m.findNodeByChannelID(post.ID)
+		if node == nil || !slices.Contains(m.channelNodes[forum.ID].Children(), node) {
+			t.Fatal("the post is not shown under the forum")
+		}
+		// An old post is no newer than what the forum was read up to.
+		if got := m.channelUnread(forum.ID); got != ningen.ChannelRead {
+			t.Errorf("channelUnread = %v, want read", got)
+		}
+	})
 }
