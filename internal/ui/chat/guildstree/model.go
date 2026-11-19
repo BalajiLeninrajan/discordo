@@ -758,7 +758,7 @@ func (m Model) addThread(thread discord.Channel) {
 	// Discord tells of a new post only by the post, so the forum's newest post is not updated otherwise.
 	if postID := discord.MessageID(thread.ID); forum && postID > parent.LastMessageID {
 		parent.LastMessageID = postID
-		if err := m.state.Cabinet.ChannelSet(parent, true); err != nil {
+		if err := m.state.ChannelSet(parent, true); err != nil {
 			slog.Error("failed to set the newest post of a forum", "channel_id", parent.ID, "err", err)
 		}
 		defer m.refreshChannel(parent.GuildID, parent.ID)

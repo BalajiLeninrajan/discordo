@@ -359,7 +359,7 @@ func TestModelForum(t *testing.T) {
 
 		post := discord.Channel{ID: 300, GuildID: forum.GuildID, Type: discord.GuildPublicThread, Name: "new", ParentID: forum.ID}
 		// The state takes the post before the model hears of it.
-		if err := s.Cabinet.ChannelSet(&post, false); err != nil {
+		if err := s.ChannelSet(&post, false); err != nil {
 			t.Fatal(err)
 		}
 		m, _ = m.Update(&gateway.ThreadCreateEvent{Channel: post, NewlyCreated: true})
@@ -379,7 +379,7 @@ func TestModelForum(t *testing.T) {
 		m, s, forum := newForumModel(t)
 		// A post that was neither active nor joined, so the state has it only once it is opened.
 		post := discord.Channel{ID: 50, GuildID: forum.GuildID, Type: discord.GuildPublicThread, Name: "archived", ParentID: forum.ID}
-		if err := s.Cabinet.ChannelSet(&post, false); err != nil {
+		if err := s.ChannelSet(&post, false); err != nil {
 			t.Fatal(err)
 		}
 		node := m.findNodeByChannelID(post.ID)
