@@ -153,7 +153,7 @@ func loadChannel(state *ningen.State, limit uint, channel discord.Channel) tview
 // markReadInterval is the time between the acknowledgements of several channels, which take a request each.
 const markReadInterval = 50 * time.Millisecond
 
-// unreadChannels returns the channels under node with unread messages or mentions: the channel itself, or those of the category, guild or direct messages it is.
+// unreadChannels returns the channels under node with unread messages or mentions: the channel itself, or those of the category, guild, folder or direct messages it is.
 func (m Model) unreadChannels(node *tree.Node) []discord.Channel {
 	if node == nil {
 		return nil
@@ -165,6 +165,13 @@ func (m Model) unreadChannels(node *tree.Node) []discord.Channel {
 		channels, _ = m.state.Cabinet.Channels(ref)
 	case dmNode:
 		channels, _ = m.state.PrivateChannels()
+	case folderNode:
+		for _, child := range node.Children() {
+			if guildID, ok := child.Reference().(discord.GuildID); ok {
+				guildChannels, _ := m.state.Cabinet.Channels(guildID)
+				channels = append(channels, guildChannels...)
+			}
+		}
 	case discord.ChannelID:
 		channel, err := m.state.Cabinet.Channel(ref)
 		if err != nil {

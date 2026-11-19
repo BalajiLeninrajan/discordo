@@ -27,6 +27,9 @@ import (
 
 type dmNode struct{}
 
+// folderNode is the reference of a guild folder's node, whose children are its guilds.
+type folderNode struct{}
+
 const (
 	dmNodeName        = "Direct Messages"
 	maxMentions       = 99
@@ -203,16 +206,16 @@ func (m Model) createFolderNode(folder gateway.GuildFolder, guildsByID map[disco
 		name = folder.Name
 	}
 
-	folderNode := tree.NewNode(name).SetExpanded(m.cfg.UI.GuildsTree.AutoExpandFolders)
+	node := tree.NewNode(name).SetReference(folderNode{}).SetExpanded(m.cfg.UI.GuildsTree.AutoExpandFolders)
 	if folder.Color != 0 {
 		folderStyle := tcell.StyleDefault.Foreground(tcell.NewHexColor(int32(folder.Color)))
-		setNodeNameStyle(folderNode, folderStyle)
+		setNodeNameStyle(node, folderStyle)
 	}
-	m.root.AddChild(folderNode)
+	m.root.AddChild(node)
 
 	for _, guildID := range folder.GuildIDs {
 		if guildEvent, ok := guildsByID[guildID]; ok {
-			m.createGuildNode(folderNode, guildEvent.Guild)
+			m.createGuildNode(node, guildEvent.Guild)
 		}
 	}
 }

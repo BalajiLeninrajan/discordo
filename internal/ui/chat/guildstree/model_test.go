@@ -170,11 +170,17 @@ func TestModelUnreadChannels(t *testing.T) {
 	// A channel without a read state was never opened, and is left alone.
 	unseen := discord.Channel{ID: 14, GuildID: guild.ID, Type: discord.GuildText, Name: "unseen", LastMessageID: 200}
 	dm := discord.Channel{ID: 20, Type: discord.DirectMessage, LastMessageID: 200, DMRecipients: []discord.User{{ID: 3}}}
+	other := discord.Guild{ID: 4, Name: "other", OwnerID: me.ID}
+	otherUnread := discord.Channel{ID: 30, GuildID: other.ID, Type: discord.GuildText, Name: "other unread", LastMessageID: 200}
 	if err := errors.Join(
 		s.MyselfSet(me, false),
 		s.GuildSet(&guild, false),
 		s.MemberSet(guild.ID, &discord.Member{User: me}, false),
 		s.RoleSet(guild.ID, &discord.Role{ID: discord.RoleID(guild.ID)}, false),
+		s.GuildSet(&other, false),
+		s.MemberSet(other.ID, &discord.Member{User: me}, false),
+		s.RoleSet(other.ID, &discord.Role{ID: discord.RoleID(other.ID)}, false),
+		s.ChannelSet(&otherUnread, false),
 		s.ChannelSet(&category, false),
 		s.ChannelSet(&unread, false),
 		s.ChannelSet(&read, false),
@@ -189,6 +195,7 @@ func TestModelUnreadChannels(t *testing.T) {
 		{ChannelID: read.ID, LastMessageID: 200},
 		{ChannelID: mentioned.ID, LastMessageID: 200, MentionCount: 1},
 		{ChannelID: dm.ID, LastMessageID: 100},
+		{ChannelID: otherUnread.ID, LastMessageID: 100},
 	}})
 
 	cfg := config.Default()
@@ -217,6 +224,20 @@ func TestModelUnreadChannels(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("folder", func(t *testing.T) {
+		folder := tree.NewNode("").SetReference(folderNode{})
+		folder.AddChild(tree.NewNode("").SetReference(guild.ID))
+		folder.AddChild(tree.NewNode("").SetReference(other.ID))
+		var got []discord.ChannelID
+		for _, channel := range m.unreadChannels(folder) {
+			got = append(got, channel.ID)
+		}
+		slices.Sort(got)
+		if want := []discord.ChannelID{unread.ID, mentioned.ID, otherUnread.ID}; !slices.Equal(got, want) {
+			t.Errorf("unreadChannels = %v, want %v", got, want)
+		}
+	})
 
 	if got := m.unreadChannels(nil); got != nil {
 		t.Errorf("unreadChannels(nil) = %v, want none", got)

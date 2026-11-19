@@ -800,7 +800,7 @@ Default: `"J"`
 
 ### keybinds.guilds_tree.mark_read
 
-Mark the highlighted channel read, or every channel of the highlighted category, guild or direct messages.
+Mark the highlighted channel read, or every channel of the highlighted category, guild, folder or direct messages.
 
 Default: `"m"`
 
