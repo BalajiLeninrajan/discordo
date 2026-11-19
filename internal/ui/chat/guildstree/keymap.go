@@ -32,9 +32,13 @@ func (m Model) selectDesc(node *tree.Node, desc string) string {
 		return "expand"
 	}
 
-	switch node.Reference().(type) {
+	switch ref := node.Reference().(type) {
 	case discord.GuildID, dmNode:
 		return "expand"
+	case discord.ChannelID:
+		if channel, err := m.state.Cabinet.Channel(ref); err == nil && channel.Type == discord.GuildForum {
+			return "posts"
+		}
 	}
 
 	return desc

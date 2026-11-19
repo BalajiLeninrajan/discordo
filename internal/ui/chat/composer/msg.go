@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,6 +33,16 @@ type EditLastMsg struct{}
 
 // SentMsg reports that the composer sent a message.
 type SentMsg struct{}
+
+// PostedMsg reports that the composer started Post, a thread of a forum.
+type PostedMsg struct{ Post discord.Channel }
+
+// PostFailedMsg reports that Post, whose first message is Text, failed to start, and why.
+type PostFailedMsg struct {
+	Post Post
+	Text string
+	Err  error
+}
 
 type editorMsg string
 
@@ -127,7 +138,8 @@ func closeFile(file sendpart.File) {
 }
 
 func (m *Model) sendTyping() tview.Cmd {
-	if !m.cfg.TypingIndicator.Send {
+	// Nobody sees typing in a forum.
+	if !m.cfg.TypingIndicator.Send || m.post != nil {
 		return nil
 	}
 
@@ -161,13 +173,19 @@ func (m *Model) send() tview.Cmd {
 		return nil
 	}
 
+	typed := text
 	text = m.processText(selectedChannel, []byte(text))
 	data := *m.sendMessageData
 	data.Files = slices.Clone(data.Files)
 
-	editing := m.editing
+	editing, post := m.editing, m.post
 	m.typingUntil = time.Time{}
 	m.reset()
+	if post != nil {
+		m.endPost()
+		data.Content = text
+		return m.startPost(*post, typed, data)
+	}
 
 	sent := cmd.Task(func() tview.Msg { return SentMsg{} })
 	return cmd.Batch{sent, cmd.Task(func() tview.Msg {
@@ -181,6 +199,35 @@ func (m *Model) send() tview.Cmd {
 		m.sendMessage(selectedChannel.ID, data)
 		return nil
 	})}
+}
+
+// startPostData is what starts a post: its title, tags and first message.
+type startPostData struct {
+	Name        string              `json:"name"`
+	AppliedTags []discord.TagID     `json:"applied_tags,omitempty"`
+	Message     api.SendMessageData `json:"message"`
+}
+
+func (data startPostData) NeedsMultipart() bool {
+	return len(data.Message.Files) > 0
+}
+
+func (data startPostData) WriteMultipart(body *multipart.Writer) error {
+	return sendpart.Write(body, data, data.Message.Files)
+}
+
+// startPost starts post with message as its first message, which was typed as typed. If it fails, typed is given back.
+func (m Model) startPost(post Post, typed string, message api.SendMessageData) tview.Cmd {
+	return cmd.Task(func() tview.Msg {
+		defer closeFiles(message.Files)()
+		data := startPostData{Name: post.Title, AppliedTags: post.Tags, Message: message}
+		var thread discord.Channel
+		url := api.EndpointChannels + post.Forum.ID.String() + "/threads"
+		if err := sendpart.POST(m.state.Client.Client, data, &thread, url); err != nil {
+			return PostFailedMsg{Post: post, Text: typed, Err: err}
+		}
+		return PostedMsg{Post: thread}
+	})
 }
 
 func (m Model) editMessage(message discord.Message, text string) {

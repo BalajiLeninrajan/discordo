@@ -194,7 +194,7 @@ func (m *Model) applyEvent(event gateway.Event) tview.Cmd {
 			return m.showTypingIndicator(event)
 		}
 
-	case *read.UpdateEvent:
+	case *read.UpdateEvent, *gateway.ThreadCreateEvent:
 		return m.updatePane(paneGuildsTree, event)
 	case *gateway.VoiceStateUpdateEvent:
 		return m.updatePane(paneGuildsTree, event)

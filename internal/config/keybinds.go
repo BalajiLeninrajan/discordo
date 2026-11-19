@@ -117,6 +117,12 @@ type TreeKeybinds struct {
 	MoveToParentNode   Keybind `toml:"move_to_parent_node"`
 }
 
+// ForumKeybinds are the keybinds of the posts of a forum, besides those of a picker.
+type ForumKeybinds struct {
+	// Start a post titled with what is typed. The composer then takes its first message.
+	NewPost Keybind `toml:"new_post"`
+}
+
 type GuildsTreeKeybinds struct {
 	TreeKeybinds
 	// Highlight the previous or next unread guild or channel, wrapping around.
@@ -256,6 +262,8 @@ type Keybinds struct {
 	FocusNext     Keybind `toml:"focus_next"`
 
 	Picker PickerKeybinds `toml:"picker"`
+	// Only while the posts of a forum are shown.
+	Forum ForumKeybinds `toml:"forum"`
 	// Only while focusing on the guilds tree.
 	GuildsTree GuildsTreeKeybinds `toml:"guilds_tree"`
 	// Only while focusing on the members tree.
@@ -329,6 +337,9 @@ func defaultKeybinds() Keybinds {
 			SelectionKeybinds: emacs,
 			Select:            key("sel", "enter"),
 			Cancel:            key("cancel", "esc"),
+		},
+		Forum: ForumKeybinds{
+			NewPost: key("new post", "alt+n"),
 		},
 		GuildsTree: GuildsTreeKeybinds{
 			TreeKeybinds:         tree,

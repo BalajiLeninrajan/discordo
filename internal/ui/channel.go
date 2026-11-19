@@ -8,6 +8,7 @@ import (
 	"github.com/ayn2op/arikawa/v3/discord"
 	"github.com/ayn2op/discordo/internal/config"
 	"github.com/ayn2op/ningen/v3"
+	"github.com/ayn2op/tview"
 )
 
 // ChannelToString returns how channel is shown in the UI: an icon for its type and its name, or the recipients' names for a DM.
@@ -67,9 +68,22 @@ func recipientName(recipient discord.User, channelType discord.ChannelType, stat
 	return *relationship.Nickname
 }
 
+// SortGuildChannels sorts channels by position, and threads, which have none, by latest activity first.
 func SortGuildChannels(channels []discord.Channel) {
-	slices.SortFunc(channels, func(a, b discord.Channel) int {
-		return cmp.Compare(a.Position, b.Position)
+	slices.SortStableFunc(channels, func(a, b discord.Channel) int {
+		if order := cmp.Compare(a.Position, b.Position); order != 0 {
+			return order
+		}
+		if aThread, bThread := a.Type.IsThread(), b.Type.IsThread(); aThread != bThread {
+			// A thread goes after the channels of its position.
+			if aThread {
+				return 1
+			}
+			return -1
+		} else if !aThread {
+			return 0
+		}
+		return cmp.Compare(lastMessageID(b), lastMessageID(a))
 	})
 }
 
@@ -87,4 +101,19 @@ func lastMessageID(channel discord.Channel) discord.MessageID {
 	}
 
 	return discord.MessageID(channel.ID)
+}
+
+// UnreadStyle returns the style of the name of something read, unread, or with unread mentions, as indication says.
+func UnreadStyle(indication ningen.UnreadIndication) tview.Style {
+	var style tview.Style
+	switch indication {
+	case ningen.ChannelRead:
+		style = style.Dim(true)
+	case ningen.ChannelMentioned:
+		style = style.Underline(true)
+		fallthrough
+	case ningen.ChannelUnread:
+		style = style.Bold(true)
+	}
+	return style
 }

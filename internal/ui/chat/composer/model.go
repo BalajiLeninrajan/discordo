@@ -47,6 +47,7 @@ const (
 	noChannelPlaceholder    = "Select a channel to start chatting"
 	noPermissionPlaceholder = "You do not have permission to send messages in this channel."
 	messagePlaceholder      = "Message..."
+	postPlaceholder         = "First message of the post..."
 )
 
 var mentionRegex = regexp.MustCompile("@[a-zA-Z0-9._]+")
@@ -75,6 +76,10 @@ type Model struct {
 
 	typingUntil time.Time
 
+	// post is the post whose first message is written, or nil, and previous the channel selected before it started.
+	post     *Post
+	previous *discord.Channel
+
 	// focused reports whether the composer takes keys and shows its completions.
 	focused bool
 }
@@ -93,8 +98,17 @@ func NewModel(cfg *config.Config, state *ningen.State) Model {
 	}
 }
 
+// Post is a post of a forum to be started with the first message written in the composer.
+type Post struct {
+	Forum discord.Channel
+	Title string
+	Tags  []discord.TagID
+}
+
 // SetChannel sets the channel messages are sent to, disabling the composer if the user may not send messages there.
+// A post being started is dropped.
 func (m *Model) SetChannel(channel *discord.Channel) {
+	m.post, m.previous = nil, nil
 	// A reply or an edit is of a message in the channel left; typed text and attachments stay.
 	if m.channel != nil && m.channel.ID != channel.ID {
 		m.sendMessageData.Reference, m.sendMessageData.AllowedMentions = nil, nil
@@ -116,6 +130,26 @@ func (m *Model) SetChannel(channel *discord.Channel) {
 	m.disabled = !isDM && !m.state.HasPermissions(channel.ID, sendPerm)
 }
 
+// StartPost makes the next message the first one of post, which it starts.
+func (m *Model) StartPost(post Post) {
+	previous := m.channel
+	m.SetChannel(&post.Forum)
+	m.post, m.previous = &post, previous
+}
+
+// endPost stops starting a post, going back to the channel selected before.
+func (m *Model) endPost() {
+	if m.post == nil {
+		return
+	}
+
+	if previous := m.previous; previous != nil {
+		m.SetChannel(previous)
+		return
+	}
+	m.post, m.channel, m.disabled = nil, nil, true
+}
+
 func (m Model) Disabled() bool {
 	return m.disabled
 }
@@ -126,6 +160,8 @@ func (m Model) placeholder() string {
 		return noChannelPlaceholder
 	case m.disabled:
 		return noPermissionPlaceholder
+	case m.post != nil:
+		return postPlaceholder
 	}
 	return messagePlaceholder
 }
@@ -149,9 +185,11 @@ func (m *Model) box(focused bool) box.Widget {
 		Height(layout.Shrink)
 }
 
-// title returns what the composer is doing: editing, replying, or nothing.
+// title returns what the composer is doing: starting a post, editing, replying, or nothing.
 func (m Model) title() string {
 	switch data := m.sendMessageData; {
+	case m.post != nil:
+		return "New post: " + m.post.Title
 	case m.editing != nil:
 		return "Editing"
 	case data.Reference != nil:
@@ -240,7 +278,7 @@ func (m *Model) reset() {
 }
 
 func (m Model) canEditLastMessage() bool {
-	return !m.Disabled() && m.editing == nil && m.text == "" &&
+	return !m.Disabled() && m.editing == nil && m.post == nil && m.text == "" &&
 		m.sendMessageData.Reference == nil && len(m.sendMessageData.Files) == 0 &&
 		!m.autocomplete.Visible()
 }
@@ -538,6 +576,13 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		}
 
 		return m, nil
+	case PostFailedMsg:
+		// What was written for the post comes back, unless something else was started since.
+		if m.post == nil && m.editing == nil && m.text == "" {
+			m.StartPost(msg.Post)
+			m.setText(msg.Text, len(msg.Text))
+		}
+		return m, cmd.Task(func() tview.Msg { return ui.ErrorDialog("start the post", msg.Err) })
 	case editorMsg:
 		m.setText(string(msg), len(msg))
 		return m, nil
@@ -568,6 +613,7 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 				return m, m.showCompletions("", nil)
 			}
 			m.reset()
+			m.endPost()
 			return m, nil
 		case keybind.Matches(msg, keybinds.TabComplete.Keybind):
 			if m.autocomplete.Visible() {

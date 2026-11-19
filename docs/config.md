@@ -718,6 +718,16 @@ Default: `"enter"`
 
 Default: `"esc"`
 
+## keybinds.forum
+
+Only while the posts of a forum are shown.
+
+### keybinds.forum.new_post
+
+Start a post titled with what is typed. The composer then takes its first message.
+
+Default: `"alt+n"`
+
 ## keybinds.guilds_tree
 
 Only while focusing on the guilds tree.
