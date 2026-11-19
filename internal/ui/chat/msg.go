@@ -88,7 +88,7 @@ func (m *Model) navigateToChannel(channelID discord.ChannelID) tview.Cmd {
 // openPost opens post, a thread of a forum, which the state may not have if it was not active or not joined.
 func (m *Model) openPost(post discord.Channel) tview.Cmd {
 	if _, err := m.state.Cabinet.Channel(post.ID); err != nil {
-		if err := m.state.Cabinet.ChannelSet(&post, false); err != nil {
+		if err := m.state.ChannelSet(&post, false); err != nil {
 			slog.Error("failed to add a post to the state", "channel_id", post.ID, "err", err)
 			return nil
 		}
