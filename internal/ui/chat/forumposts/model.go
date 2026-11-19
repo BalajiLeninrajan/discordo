@@ -3,8 +3,10 @@ package forumposts
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,10 +32,12 @@ const (
 	pageSize = 25
 	// maxTitleLength is the longest title Discord takes.
 	maxTitleLength = 100
+	// maxTags is the most tags a post can have.
+	maxTags = 5
 	// indexNotReady is the code of Discord's answer to a search of a forum it has not indexed yet.
 	indexNotReady = 110000
-	// maxRetries is how many times a search waits for the index before it fails.
-	maxRetries = 3
+	// maxRetries is how many times a search waits for the index before it fails, which is a minute or so.
+	maxRetries = 30
 )
 
 type Model struct {
@@ -42,9 +46,11 @@ type Model struct {
 
 	// forum is the forum shown, or nil before one is.
 	forum *discord.Channel
-	// seen maps each forum shown to the message it was read up to before it was first shown. Showing a forum reads
-	// it, as Discord does, and the posts newer than that stay marked new until they are opened.
-	seen map[discord.ChannelID]discord.MessageID
+	// fresh are the posts that were new when the forum was shown, of which there are more if freshMore, once
+	// freshKnown. The forum is read once every one of them is opened.
+	fresh      []discord.Channel
+	freshMore  bool
+	freshKnown bool
 
 	// query is what is typed, with the cursor at the byte offset queryCursor in it.
 	query       string
@@ -64,36 +70,33 @@ type Model struct {
 	err     error
 	// request numbers the searches, so that the results of one replaced by another are dropped.
 	request int
+	// retries counts the searches that found the forum not indexed yet, which they are waiting for if indexing.
+	retries  int
+	indexing bool
 
-	// picking reports whether a tag of a new post titled title is picked, and tag is the one selected.
+	// picking reports whether the tags of a new post titled title are picked. tag is the choice selected, the first
+	// of which writes the post, and applied the tags picked.
 	picking bool
 	title   string
 	tag     int
+	applied []discord.TagID
 	// problem is why a post cannot be started, or "".
 	problem string
 }
 
 func NewModel(cfg *config.Config, state *ningen.State) Model {
-	return Model{cfg: cfg, state: state, seen: make(map[discord.ChannelID]discord.MessageID)}
+	return Model{cfg: cfg, state: state}
 }
 
 // Open shows the posts of forum, keeping the query if it is the forum shown last.
 func (m *Model) Open(forum discord.Channel) tview.Cmd {
-	if _, ok := m.seen[forum.ID]; !ok {
-		var read discord.MessageID
-		if state := m.state.ReadState.ReadState(forum.ID); state != nil {
-			read = state.LastMessageID
-		}
-		m.seen[forum.ID] = read
-	}
-
 	query, cursor := m.query, m.queryCursor
 	if m.forum == nil || m.forum.ID != forum.ID {
 		query, cursor = "", 0
 	}
-	*m = Model{cfg: m.cfg, state: m.state, seen: m.seen, forum: &forum, query: query, queryCursor: cursor, request: m.request}
+	*m = Model{cfg: m.cfg, state: m.state, forum: &forum, query: query, queryCursor: cursor, request: m.request}
 	m.searched = strings.TrimSpace(query)
-	return m.search(0)
+	return cmd.Batch{m.search(0), m.findNew()}
 }
 
 var _ tview.Model[Model] = Model{}
@@ -129,6 +132,16 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		return m, m.newPost()
 	case resultsMsg:
 		return m, m.setResults(msg)
+	case retryMsg:
+		if msg.request == m.request {
+			return m, m.search(msg.offset)
+		}
+	case freshMsg:
+		if m.forum == nil || msg.forumID != m.forum.ID || msg.err != nil {
+			return m, nil
+		}
+		m.fresh, m.freshMore, m.freshKnown = msg.posts, msg.more, true
+		return m, m.readIfOpened(0)
 	}
 	return m, nil
 }
@@ -137,14 +150,18 @@ func send(msg tview.Msg) tview.Cmd {
 	return cmd.Task(func() tview.Msg { return msg })
 }
 
-// submit starts the post with the selected tag while one is picked. Otherwise it opens the selected post if the
-// posts are for the query, or searches for the query.
+// submit toggles the selected tag while tags are picked, or writes the post if that is selected. Otherwise it opens
+// the selected post if the posts are for the query, or searches for the query.
 func (m *Model) submit() tview.Cmd {
 	if m.forum == nil {
 		return nil
 	}
 	if m.picking {
-		return m.startPost()
+		if m.tag == 0 {
+			return m.writePost()
+		}
+		m.toggleTag(m.tags()[m.tag-1].ID)
+		return nil
 	}
 
 	query := strings.TrimSpace(m.query)
@@ -157,7 +174,7 @@ func (m *Model) submit() tview.Cmd {
 		if member, ok := m.joined[post.ID]; ok {
 			post.ThreadMember = &member
 		}
-		return send(SelectedMsg{Post: post})
+		return cmd.Batch{send(SelectedMsg{Post: post}), m.readIfOpened(post.ID)}
 	}
 
 	m.searched, m.posts, m.joined, m.total, m.hasMore, m.err = query, nil, nil, 0, false, nil
@@ -165,10 +182,14 @@ func (m *Model) submit() tview.Cmd {
 	return m.search(0)
 }
 
-// newPost starts a post titled with the query, after a tag is picked if the forum has tags the user may apply.
+// newPost starts a post titled with the query, after its tags are picked if the forum has tags the user may apply.
+// While they are, it writes the post.
 func (m *Model) newPost() tview.Cmd {
 	if m.forum == nil {
 		return nil
+	}
+	if m.picking {
+		return m.writePost()
 	}
 	title := strings.TrimSpace(m.query)
 	switch {
@@ -187,20 +208,41 @@ func (m *Model) newPost() tview.Cmd {
 	if len(m.tags()) == 0 {
 		return m.startPost()
 	}
-	m.picking, m.tag = true, 0
+	m.picking, m.tag, m.applied = true, 0, nil
 	return nil
 }
 
-// startPost asks for the first message of the post, with the selected tag if one is picked.
+// writePost asks for the first message of the post with the tags picked, unless a tag is required and none is.
+func (m *Model) writePost() tview.Cmd {
+	if m.tagRequired() && len(m.applied) == 0 {
+		m.problem = "Pick a tag first"
+		return nil
+	}
+	return m.startPost()
+}
+
+// startPost asks for the first message of the post, with the tags picked.
 func (m *Model) startPost() tview.Cmd {
 	var tags []discord.TagID
-	if m.picking {
-		if tag, ok := m.selectedTag(); ok {
-			tags = []discord.TagID{tag.ID}
-		}
+	if len(m.applied) > 0 {
+		tags = slices.Clone(m.applied)
 	}
-	m.picking = false
+	m.picking, m.applied = false, nil
 	return send(NewPostMsg{Forum: *m.forum, Title: m.title, Tags: tags})
+}
+
+// toggleTag picks the tag with id, or unpicks it if it is picked, unless as many as can be are.
+func (m *Model) toggleTag(id discord.TagID) {
+	m.problem = ""
+	if index := slices.Index(m.applied, id); index >= 0 {
+		m.applied = slices.Delete(m.applied, index, index+1)
+		return
+	}
+	if len(m.applied) >= maxTags {
+		m.problem = fmt.Sprintf("Posts have at most %d tags", maxTags)
+		return
+	}
+	m.applied = append(m.applied, id)
 }
 
 // tagRequired reports whether a post in the forum must have a tag.
@@ -220,25 +262,9 @@ func (m Model) tags() []discord.Tag {
 	return tags
 }
 
-// tagChoices returns the number of choices while a tag is picked, which start with none unless one is required.
+// tagChoices returns the number of choices while tags are picked: writing the post, then the tags.
 func (m Model) tagChoices() int {
-	if m.tagRequired() {
-		return len(m.tags())
-	}
 	return len(m.tags()) + 1
-}
-
-// selectedTag returns the tag selected, or false if no tag is.
-func (m Model) selectedTag() (discord.Tag, bool) {
-	index := m.tag
-	if !m.tagRequired() {
-		index--
-	}
-	tags := m.tags()
-	if index < 0 || index >= len(tags) {
-		return discord.Tag{}, false
-	}
-	return tags[index], true
 }
 
 // loadMore searches for the next page of posts once the last one loaded is selected.
@@ -264,7 +290,21 @@ type searchResponse struct {
 	RetryAfter float64 `json:"retry_after"`
 }
 
-// search asks Discord for the posts matching the query searched, starting at offset, active or archived.
+// retryAfter returns how long to wait before searching again, or 0 if the search was answered.
+func (r searchResponse) retryAfter() time.Duration {
+	if r.Code != indexNotReady {
+		return 0
+	}
+	return time.Duration(max(r.RetryAfter, 1) * float64(time.Second))
+}
+
+// searchPosts asks Discord for the posts of forum matching data, active or archived.
+func searchPosts(client *api.Client, forumID discord.ChannelID, data api.SearchThreadsData) (searchResponse, error) {
+	endpoint := api.EndpointChannels + forumID.String() + "/threads/search"
+	return client.RequestJSON[searchResponse]("GET", endpoint, httputil.WithSchema(client, data))
+}
+
+// search asks Discord for the posts matching the query searched, starting at offset.
 func (m *Model) search(offset int) tview.Cmd {
 	m.request++
 	m.loading = true
@@ -280,32 +320,35 @@ func (m *Model) search(offset int) tview.Cmd {
 		data.SortBy = api.Relevance
 	}
 	return cmd.Task(func() tview.Msg {
-		endpoint := api.EndpointChannels + forum.ID.String() + "/threads/search"
-		for retry := 0; ; retry++ {
-			response, err := client.RequestJSON[searchResponse]("GET", endpoint, httputil.WithSchema(client, data))
-			if err == nil && response.Code == indexNotReady {
-				if retry < maxRetries {
-					time.Sleep(time.Duration(max(response.RetryAfter, 1) * float64(time.Second)))
-					continue
-				}
-				err = fmt.Errorf("discord has not indexed the forum yet")
-			}
-			if err != nil {
-				slog.Error("failed to search forum posts", "channel_id", forum.ID, "err", err)
-			}
-			return resultsMsg{request: request, offset: offset, response: response.SearchThreadsResponse, err: err}
+		response, err := searchPosts(client, forum.ID, data)
+		if err != nil {
+			slog.Error("failed to search forum posts", "channel_id", forum.ID, "err", err)
 		}
+		return resultsMsg{request: request, offset: offset, response: response.SearchThreadsResponse, retryAfter: response.retryAfter(), err: err}
 	})
 }
 
-// setResults adds the page of posts msg has, unless a later search replaced the one it is for. The first page reads
-// the forum up to its newest post.
+// setResults adds the page of posts msg has, unless a later search replaced the one it is for. If the forum is not
+// indexed yet, it searches again once Discord says to.
 func (m *Model) setResults(msg resultsMsg) tview.Cmd {
 	if msg.request != m.request {
 		return nil
 	}
 
-	m.loading = false
+	if msg.err == nil && msg.retryAfter > 0 {
+		m.retries++
+		if m.retries <= maxRetries {
+			m.indexing = true
+			request, offset := m.request, msg.offset
+			return cmd.Task(func() tview.Msg {
+				time.Sleep(msg.retryAfter)
+				return retryMsg{request: request, offset: offset}
+			})
+		}
+		msg.err = errors.New("discord has not indexed the forum yet")
+	}
+
+	m.loading, m.indexing, m.retries = false, false, 0
 	if msg.err != nil {
 		m.err = msg.err
 		return nil
@@ -320,16 +363,53 @@ func (m *Model) setResults(msg resultsMsg) tview.Cmd {
 		m.joined[member.ID] = member
 	}
 	m.total, m.hasMore = max(response.TotalResults, len(m.posts)), response.HasMore && len(response.Threads) != 0
-	if msg.offset == 0 {
-		return m.readForum()
-	}
 	return nil
 }
 
-// readForum marks the forum read up to its newest post, of those Discord knows of and those shown.
-func (m Model) readForum() tview.Cmd {
+// findNew asks Discord for the posts posted after the user last read the forum, if it is unread.
+func (m Model) findNew() tview.Cmd {
+	state := m.state.ReadState.ReadState(m.forum.ID)
+	if state == nil || !state.LastMessageID.IsValid() || state.LastMessageID >= m.state.LastMessage(m.forum.ID) {
+		return nil
+	}
+
+	forumID, client := m.forum.ID, m.state.Client
+	data := api.SearchThreadsData{
+		MinID:     discord.Snowflake(state.LastMessageID),
+		SortBy:    api.CreationTime,
+		SortOrder: api.SortDescending,
+		Limit:     pageSize,
+	}
+	return cmd.Task(func() tview.Msg {
+		for retry := 0; ; retry++ {
+			response, err := searchPosts(client, forumID, data)
+			if wait := response.retryAfter(); err == nil && wait > 0 {
+				if retry < maxRetries {
+					time.Sleep(wait)
+					continue
+				}
+				err = errors.New("discord has not indexed the forum yet")
+			}
+			if err != nil {
+				slog.Error("failed to find the new posts of a forum", "channel_id", forumID, "err", err)
+			}
+			return freshMsg{forumID: forumID, posts: response.Threads, more: response.HasMore, err: err}
+		}
+	})
+}
+
+// readIfOpened marks the forum read up to its newest post once every new post is opened, other than the one with
+// opening, which is being opened.
+func (m Model) readIfOpened(opening discord.ChannelID) tview.Cmd {
+	if !m.freshKnown || m.freshMore {
+		return nil
+	}
+
 	newest := m.state.LastMessage(m.forum.ID)
-	for _, post := range m.posts {
+	for _, post := range m.fresh {
+		if post.ID != opening && ui.NewPost(m.state, m.forum.ID, post.ID) {
+			return nil
+		}
 		newest = max(newest, discord.MessageID(post.ID))
 	}
 
@@ -346,11 +426,11 @@ func (m Model) readForum() tview.Cmd {
 }
 
 // unread returns whether post has messages or mentions the user has not read, which a post they are not in has only
-// if it is new: posted after they last read the forum before it was shown, and not opened since.
+// if it is new.
 func (m Model) unread(post discord.Channel) ningen.UnreadIndication {
 	state := m.state.ReadState.ReadState(post.ID)
 	if state == nil {
-		if seen := m.seen[m.forum.ID]; seen.IsValid() && discord.MessageID(post.ID) > seen {
+		if ui.NewPost(m.state, m.forum.ID, post.ID) {
 			return ningen.ChannelUnread
 		}
 		return ningen.ChannelRead
@@ -372,9 +452,11 @@ func (m Model) status() string {
 	case m.problem != "":
 		return m.problem
 	case m.picking && m.tagRequired():
-		return "Pick a tag for the post"
+		return fmt.Sprintf("Pick 1 to %d tags, then write the post", maxTags)
 	case m.picking:
-		return "Pick a tag for the post, if any"
+		return fmt.Sprintf("Pick up to %d tags, then write the post", maxTags)
+	case m.indexing && len(m.posts) == 0:
+		return "Discord is indexing the forum..."
 	case m.loading && len(m.posts) == 0:
 		return "Loading..."
 	case m.err != nil:
@@ -444,15 +526,22 @@ func plural(count int, noun string) string {
 	return fmt.Sprintf("%d %ss", count, noun)
 }
 
-// tagView shows the tag choice at index, the first of which is none unless a tag is required.
+// tagView shows the choice at index while tags are picked: writing the post, then each tag and whether it is picked.
 func (m Model) tagView(index int) tview.Widget {
-	if !m.tagRequired() {
-		if index == 0 {
-			return text.New("No tag").Wrapping(text.WrappingNone)
+	if index == 0 {
+		label := "Write the post"
+		if count := len(m.applied); count > 0 {
+			label += " with " + plural(count, "tag")
 		}
-		index--
+		return text.New(label).Style(tcell.StyleDefault.Bold(true)).Wrapping(text.WrappingNone)
 	}
-	return text.New(tagLabel(m.tags()[index])).Wrapping(text.WrappingNone)
+
+	tag := m.tags()[index-1]
+	box := "[ ] "
+	if slices.Contains(m.applied, tag.ID) {
+		box = "[x] "
+	}
+	return text.New(box + tagLabel(tag)).Wrapping(text.WrappingNone)
 }
 
 var _ help.KeyMap = Model{}
@@ -475,8 +564,10 @@ func (m Model) selectKeybind() keybind.Keybind {
 	selectKey := m.cfg.Keybinds.Picker.Select.Keybind
 	desc := "open"
 	switch {
+	case m.picking && m.tag == 0:
+		desc = "write post"
 	case m.picking:
-		desc = "pick tag"
+		desc = "toggle tag"
 	case strings.TrimSpace(m.query) != m.searched || m.err != nil:
 		desc = "search"
 	}

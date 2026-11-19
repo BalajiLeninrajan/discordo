@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/ayn2op/arikawa/v3/api"
 	"github.com/ayn2op/arikawa/v3/discord"
@@ -117,15 +118,11 @@ func TestModelUnread(t *testing.T) {
 		}
 	})
 
-	// Showing the forum reads it, but what was new stays so.
 	t.Run("after the forum is read", func(t *testing.T) {
 		// An ack from Discord, as another client sends, rather than MarkRead, which would send a request.
 		m.state.State.Call(&gateway.MessageAckEvent{ChannelID: forumID, MessageID: 300})
-		if state := m.state.ReadState.ReadState(forumID); state == nil || state.LastMessageID != 300 {
-			t.Fatal("the forum is not read")
-		}
-		if got := m.unread(post(300, 300)); got != ningen.ChannelUnread {
-			t.Errorf("unread = %v, want unread", got)
+		if got := m.unread(post(300, 300)); got != ningen.ChannelRead {
+			t.Errorf("unread = %v, want read", got)
 		}
 	})
 }
@@ -139,18 +136,6 @@ func TestModelResults(t *testing.T) {
 		}
 	})
 
-	t.Run("reads the forum up to its newest post", func(t *testing.T) {
-		m := newTestModel(t, 0, false)
-		_, command := m.Update(resultsMsg{request: m.request, response: api.SearchThreadsResponse{Threads: []discord.Channel{post(300, 300)}, TotalResults: 1}})
-		if command == nil {
-			t.Error("the forum is not read")
-		}
-		_, command = m.Update(resultsMsg{request: m.request, response: api.SearchThreadsResponse{Threads: []discord.Channel{post(90, 90)}, TotalResults: 1}})
-		if command != nil {
-			t.Error("a forum already read is read again")
-		}
-	})
-
 	t.Run("loads more at the last post", func(t *testing.T) {
 		m := loaded(newTestModel(t, 0, false), true, post(300, 300), post(90, 90))
 		if m, command := update(m, cursorMsg(1)); command == nil || !m.loading {
@@ -160,6 +145,66 @@ func TestModelResults(t *testing.T) {
 			t.Fatal("more is loaded when there is none")
 		}
 	})
+
+	t.Run("waits for the index", func(t *testing.T) {
+		m := newTestModel(t, 0, false)
+		for range maxRetries {
+			var command tview.Cmd
+			m, command = m.Update(resultsMsg{request: m.request, retryAfter: time.Millisecond})
+			if command == nil || !m.indexing || !m.loading || m.status() != "Discord is indexing the forum..." {
+				t.Fatalf("indexing = %v, loading = %v, status = %q", m.indexing, m.loading, m.status())
+			}
+			request := m.request
+			if m, command = m.Update(sent(t, command)); command == nil || m.request == request {
+				t.Fatal("the search is not tried again")
+			}
+		}
+
+		m, _ = m.Update(resultsMsg{request: m.request, retryAfter: time.Millisecond})
+		if m.err == nil || m.loading || m.indexing {
+			t.Fatalf("err = %v, loading = %v, indexing = %v", m.err, m.loading, m.indexing)
+		}
+	})
+
+	t.Run("drops replaced retries", func(t *testing.T) {
+		m := newTestModel(t, 0, false)
+		if _, command := m.Update(retryMsg{request: m.request - 1}); command != nil {
+			t.Fatal("a replaced search is tried again")
+		}
+	})
+}
+
+func TestModelReadIfOpened(t *testing.T) {
+	fresh := func(more bool, posts ...discord.Channel) (Model, tview.Cmd) {
+		return newTestModel(t, 0, false).Update(freshMsg{forumID: forumID, posts: posts, more: more})
+	}
+
+	t.Run("not while a new post is unopened", func(t *testing.T) {
+		if _, command := fresh(false, post(300, 300), post(200, 250)); command != nil {
+			t.Fatal("the forum is read")
+		}
+	})
+
+	t.Run("once every new post is opened", func(t *testing.T) {
+		if _, command := fresh(false, post(200, 250)); command == nil {
+			t.Fatal("the forum is not read")
+		}
+	})
+
+	t.Run("not while there are more new posts", func(t *testing.T) {
+		if _, command := fresh(true, post(200, 250)); command != nil {
+			t.Fatal("the forum is read")
+		}
+	})
+
+	t.Run("on opening the last new post", func(t *testing.T) {
+		m, _ := fresh(false, post(300, 300), post(200, 250))
+		m = loaded(m, false, post(300, 300), post(200, 250))
+		_, command := update(m, submitMsg{})
+		if batch, ok := command.(cmd.Batch); !ok || len(batch) != 2 || batch[1] == nil {
+			t.Fatalf("command = %#v, want the post opened and the forum read", command)
+		}
+	})
 }
 
 func TestModelSubmit(t *testing.T) {
@@ -167,7 +212,11 @@ func TestModelSubmit(t *testing.T) {
 		m := loaded(newTestModel(t, 0, false), false, post(300, 300), post(90, 90))
 		m.joined = map[discord.ChannelID]discord.ThreadMember{90: {ID: 90}}
 		m, command := update(m, cursorMsg(1), submitMsg{})
-		msg, ok := sent(t, command).(SelectedMsg)
+		batch, ok := command.(cmd.Batch)
+		if !ok {
+			t.Fatalf("command = %T, want a batch", command)
+		}
+		msg, ok := sent(t, batch[0]).(SelectedMsg)
 		if !ok || msg.Post.ID != 90 || msg.Post.GuildID != guildID || msg.Post.ThreadMember == nil {
 			t.Fatalf("msg = %#v, want post 90 in the guild, joined", msg)
 		}
@@ -189,6 +238,24 @@ func TestModelSubmit(t *testing.T) {
 }
 
 func TestModelNewPost(t *testing.T) {
+	// picking returns the posts of a forum with flags with tags being picked for a post titled title.
+	picking := func(t *testing.T, flags discord.ChannelFlags) Model {
+		t.Helper()
+		m, command := update(newTestModel(t, flags, false), queryMsg{query: "title"}, newPostMsg{})
+		if command != nil || !m.picking || m.tagChoices() != 3 {
+			t.Fatalf("command = %v, picking = %v, choices = %d", command, m.picking, m.tagChoices())
+		}
+		return m
+	}
+	written := func(t *testing.T, command tview.Cmd) NewPostMsg {
+		t.Helper()
+		msg, ok := sent(t, command).(NewPostMsg)
+		if !ok || msg.Title != "title" {
+			t.Fatalf("msg = %#v, want a post titled title", msg)
+		}
+		return msg
+	}
+
 	t.Run("needs a title", func(t *testing.T) {
 		m, command := update(newTestModel(t, 0, false), queryMsg{query: "  "}, newPostMsg{})
 		if command != nil || m.problem == "" || m.picking {
@@ -203,38 +270,48 @@ func TestModelNewPost(t *testing.T) {
 		}
 	})
 
-	t.Run("without a tag", func(t *testing.T) {
-		m, command := update(newTestModel(t, 0, false), queryMsg{query: "title"}, newPostMsg{})
-		if command != nil || !m.picking || m.tagChoices() != 3 {
-			t.Fatalf("picking = %v, choices = %d", m.picking, m.tagChoices())
-		}
-		msg, ok := sent(t, func() tview.Cmd { _, c := update(m, submitMsg{}); return c }()).(NewPostMsg)
-		if !ok || msg.Title != "title" || msg.Tags != nil {
-			t.Fatalf("msg = %#v, want a post titled title without tags", msg)
+	t.Run("without tags", func(t *testing.T) {
+		_, command := update(picking(t, 0), submitMsg{})
+		if msg := written(t, command); msg.Tags != nil {
+			t.Fatalf("tags = %v, want none", msg.Tags)
 		}
 	})
 
-	t.Run("with a tag", func(t *testing.T) {
-		m, command := update(newTestModel(t, 0, false), queryMsg{query: "title"}, newPostMsg{}, cursorMsg(2), submitMsg{})
-		msg, ok := sent(t, command).(NewPostMsg)
-		if !ok || !slices.Equal(msg.Tags, []discord.TagID{2}) || m.picking {
-			t.Fatalf("msg = %#v, picking = %v, want the moderators' tag", msg, m.picking)
+	t.Run("with tags", func(t *testing.T) {
+		m, command := update(picking(t, 0), cursorMsg(2), submitMsg{}, cursorMsg(1), submitMsg{}, newPostMsg{})
+		if msg := written(t, command); !slices.Equal(msg.Tags, []discord.TagID{2, 1}) || m.picking {
+			t.Fatalf("tags = %v, picking = %v, want both", msg.Tags, m.picking)
+		}
+	})
+
+	t.Run("unpicks a tag", func(t *testing.T) {
+		_, command := update(picking(t, 0), cursorMsg(1), submitMsg{}, submitMsg{}, cursorMsg(0), submitMsg{})
+		if msg := written(t, command); msg.Tags != nil {
+			t.Fatalf("tags = %v, want none", msg.Tags)
+		}
+	})
+
+	t.Run("at most five tags", func(t *testing.T) {
+		m := picking(t, 0)
+		m.applied = []discord.TagID{3, 4, 5, 6, 7}
+		if m, _ = update(m, cursorMsg(1), submitMsg{}); len(m.applied) != maxTags || m.problem == "" {
+			t.Fatalf("applied = %v, problem = %q", m.applied, m.problem)
 		}
 	})
 
 	t.Run("a required tag", func(t *testing.T) {
-		m, _ := update(newTestModel(t, discord.ThreadRequireTag, false), queryMsg{query: "title"}, newPostMsg{})
-		if m.tagChoices() != 2 {
-			t.Fatalf("choices = %d, want the tags without none", m.tagChoices())
+		m, command := update(picking(t, discord.ThreadRequireTag), submitMsg{})
+		if command != nil || m.problem == "" || !m.picking {
+			t.Fatalf("command = %v, problem = %q, want a tag asked for", command, m.problem)
 		}
-		_, command := update(m, submitMsg{})
-		if msg, ok := sent(t, command).(NewPostMsg); !ok || !slices.Equal(msg.Tags, []discord.TagID{1}) {
-			t.Fatalf("msg = %#v, want the first tag", msg)
+		_, command = update(m, cursorMsg(1), submitMsg{}, cursorMsg(0), submitMsg{})
+		if msg := written(t, command); !slices.Equal(msg.Tags, []discord.TagID{1}) {
+			t.Fatalf("tags = %v, want the first", msg.Tags)
 		}
 	})
 
 	t.Run("goes back from the tags", func(t *testing.T) {
-		m, command := update(newTestModel(t, 0, false), queryMsg{query: "title"}, newPostMsg{}, cancelMsg{})
+		m, command := update(picking(t, 0), cancelMsg{})
 		if command != nil || m.picking {
 			t.Fatalf("command = %v, picking = %v", command, m.picking)
 		}

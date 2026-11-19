@@ -159,6 +159,15 @@ func (m Model) refreshChannel(guildID discord.GuildID, channelID discord.Channel
 	setNodeText(node, m.channelText(*channel))
 	setNodeNameStyle(node, m.channelNodeStyle(*channel))
 
+	// Reading a forum reads the posts that were new in it.
+	if channel.Type == discord.GuildForum {
+		for _, child := range node.Children() {
+			if postID, ok := child.Reference().(discord.ChannelID); ok {
+				setNodeNameStyle(child, ui.UnreadStyle(m.channelUnread(postID)))
+			}
+		}
+	}
+
 	// A category shows whether any of its channels are unread.
 	if parentNode := m.channelNodes[channel.ParentID]; parentNode != nil {
 		if parent, err := m.state.Cabinet.Channel(channel.ParentID); err == nil {
@@ -790,7 +799,8 @@ func (m Model) expandPathToNode(node *tree.Node) {
 var unreadOpts = ningen.UnreadOpts{IncludeMutedCategories: true}
 
 // channelUnread reports whether the channel with channelID has unread messages or mentions. Unlike ningen, it also
-// counts a direct message, which has no permissions to view it and which ningen therefore reports as read.
+// counts a direct message, which has no permissions to view it and which ningen therefore reports as read, and a new
+// post of a forum, which the user has not joined.
 func (m Model) channelUnread(channelID discord.ChannelID) ningen.UnreadIndication {
 	indication := m.state.ChannelIsUnread(channelID, unreadOpts)
 	if indication != ningen.ChannelRead {
@@ -798,6 +808,12 @@ func (m Model) channelUnread(channelID discord.ChannelID) ningen.UnreadIndicatio
 	}
 
 	channel, err := m.state.Cabinet.Channel(channelID)
+	if err == nil && m.isPost(*channel) {
+		if ui.NewPost(m.state, channel.ParentID, channel.ID) && !m.state.ChannelIsMuted(channel.ParentID, unreadOpts) {
+			return ningen.ChannelUnread
+		}
+		return indication
+	}
 	if err != nil || channel.GuildID.IsValid() || m.state.ChannelIsMuted(channelID, unreadOpts) {
 		return indication
 	}
@@ -808,6 +824,15 @@ func (m Model) channelUnread(channelID discord.ChannelID) ningen.UnreadIndicatio
 		return ningen.ChannelUnread
 	}
 	return ningen.ChannelRead
+}
+
+// isPost reports whether channel is a post of a forum.
+func (m Model) isPost(channel discord.Channel) bool {
+	if !channel.Type.IsThread() {
+		return false
+	}
+	parent, err := m.state.Cabinet.Channel(channel.ParentID)
+	return err == nil && parent.Type == discord.GuildForum
 }
 
 // categoryUnread returns the strongest unread indication among the channels in category, which has no read state of its own.

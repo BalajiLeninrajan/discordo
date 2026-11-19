@@ -117,3 +117,13 @@ func UnreadStyle(indication ningen.UnreadIndication) tview.Style {
 	}
 	return style
 }
+
+// NewPost reports whether the thread with postID in the forum with forumID is a new post: posted after the user last
+// read the forum, and not opened since, which leaves a read state of its own.
+func NewPost(state *ningen.State, forumID, postID discord.ChannelID) bool {
+	if state.ReadState.ReadState(postID) != nil {
+		return false
+	}
+	forum := state.ReadState.ReadState(forumID)
+	return forum != nil && forum.LastMessageID.IsValid() && discord.MessageID(postID) > forum.LastMessageID
+}

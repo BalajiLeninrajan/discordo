@@ -370,8 +370,22 @@ func TestModelForum(t *testing.T) {
 		if got, want := node.Spans()[0].Style, ui.UnreadStyle(ningen.ChannelUnread); got != want {
 			t.Errorf("forum style = %v, want %v", got, want)
 		}
-		if children := node.Children(); len(children) != 2 || children[0] != m.channelNodes[post.ID] {
-			t.Errorf("the new post is not first under the forum")
+		postNode := m.channelNodes[post.ID]
+		if children := node.Children(); len(children) != 2 || children[0] != postNode {
+			t.Fatal("the new post is not first under the forum")
+		}
+		if got, want := postNode.Spans()[0].Style, ui.UnreadStyle(ningen.ChannelUnread); got != want {
+			t.Errorf("post style = %v, want %v", got, want)
+		}
+		if old := m.channelNodes[100]; m.channelUnread(100) != ningen.ChannelRead || old == nil {
+			t.Error("a post older than the forum was read is unread")
+		}
+
+		// Reading the forum reads the new post.
+		s.State.Call(&gateway.MessageAckEvent{ChannelID: forum.ID, MessageID: 300})
+		m, _ = m.Update(&read.UpdateEvent{ReadState: gateway.ReadState{ChannelID: forum.ID}, GuildID: forum.GuildID})
+		if got, want := postNode.Spans()[0].Style, ui.UnreadStyle(ningen.ChannelRead); got != want {
+			t.Errorf("post style after reading the forum = %v, want %v", got, want)
 		}
 	})
 
