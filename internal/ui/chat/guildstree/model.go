@@ -493,9 +493,25 @@ func voiceCmd(what string, action func() error) tview.Cmd {
 	})
 }
 
-// expandable reports whether selecting node expands or collapses it, which the members of a voice channel do not make it.
+// expandable reports whether selecting node expands or collapses it. A channel with messages opens instead, even when its
+// threads or voice members are under it.
 func (m Model) expandable(node *tree.Node) bool {
-	return len(node.Children()) > 0 && m.voiceChannel(node) == nil
+	return len(node.Children()) > 0 && !m.hasMessages(node)
+}
+
+// hasMessages reports whether node is a channel that selecting opens, which a category or forum is not.
+func (m Model) hasMessages(node *tree.Node) bool {
+	channelID, ok := node.Reference().(discord.ChannelID)
+	if !ok {
+		return false
+	}
+
+	channel, err := m.state.Cabinet.Channel(channelID)
+	if err != nil {
+		return false
+	}
+
+	return channel.Type != discord.GuildCategory && channel.Type != discord.GuildForum
 }
 
 func isVoice(channelType discord.ChannelType) bool {

@@ -92,6 +92,10 @@ func (m Model) selectChannel(node *tree.Node, channelID discord.ChannelID) tview
 	}
 
 	if channel.Type != discord.GuildForum {
+		// Show the threads of the channel as it opens.
+		if len(node.Children()) > 0 {
+			node.Expand()
+		}
 		return loadChannel(m.state, uint(m.cfg.MessagesLimit), *channel)
 	}
 
