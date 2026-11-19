@@ -122,7 +122,7 @@ type GuildsTreeKeybinds struct {
 	// Highlight the previous or next unread guild or channel, wrapping around.
 	SelectPreviousUnread Keybind `toml:"select_previous_unread"`
 	SelectNextUnread     Keybind `toml:"select_next_unread"`
-	// Mark the highlighted channel read, or every channel of the highlighted category, guild or direct messages.
+	// Mark the highlighted channel read, or every channel of the highlighted category, guild, folder or direct messages.
 	MarkRead Keybind `toml:"mark_read"`
 	// Join the highlighted voice channel to listen, or leave it.
 	ToggleVoice Keybind `toml:"toggle_voice"`
