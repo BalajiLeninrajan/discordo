@@ -85,15 +85,15 @@ func (m *Model) navigateToChannel(channelID discord.ChannelID) tview.Cmd {
 	return cmd
 }
 
-// openPost opens post, a thread of a forum, which the state may not have if it was not active or not joined.
-func (m *Model) openPost(post discord.Channel) tview.Cmd {
-	if _, err := m.state.Cabinet.Channel(post.ID); err != nil {
-		if err := m.state.ChannelSet(&post, false); err != nil {
-			slog.Error("failed to add a post to the state", "channel_id", post.ID, "err", err)
+// openThread opens thread, such as a post of a forum, which the state may not have if it was not active or not joined.
+func (m *Model) openThread(thread discord.Channel) tview.Cmd {
+	if _, err := m.state.Cabinet.Channel(thread.ID); err != nil {
+		if err := m.state.ChannelSet(&thread, false); err != nil {
+			slog.Error("failed to add a thread to the state", "channel_id", thread.ID, "err", err)
 			return nil
 		}
 	}
-	return m.navigateToChannel(post.ID)
+	return m.navigateToChannel(thread.ID)
 }
 
 // paneMsg is what a pane's widget made of a mouse message within it. A left mouse button press also focuses the pane.

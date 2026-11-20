@@ -950,6 +950,12 @@ Select the message that the selected message replies to.
 
 Default: `"s"`
 
+### keybinds.messages_list.open_thread
+
+Open the thread that the selected message started or announces.
+
+Default: `"t"`
+
 ### keybinds.messages_list.reply
 
 Reply to the selected message.
