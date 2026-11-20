@@ -327,6 +327,8 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 	case reactionspicker.CancelMsg:
 		m.overlay = overlayNone
 		return m, nil
+	case messageslist.OpenThreadMsg:
+		return m, m.openThread(msg.Thread)
 	case messageslist.SearchMsg:
 		m.messageSearch.Open(msg.Channel)
 		m.overlay = overlayMessageSearch
@@ -347,7 +349,7 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		return m, m.forumPosts.Open(msg.Forum)
 	case forumposts.SelectedMsg:
 		m.overlay = overlayNone
-		return m, m.openPost(msg.Post)
+		return m, m.openThread(msg.Post)
 	case forumposts.NewPostMsg:
 		m.overlay = overlayNone
 		m.composer.StartPost(composer.Post{Forum: msg.Forum, Title: msg.Title, Tags: msg.Tags})
@@ -361,7 +363,7 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		m.forumPosts, command = m.forumPosts.Update(msg)
 		return m, command
 	case composer.PostedMsg:
-		return m, m.openPost(msg.Post)
+		return m, m.openThread(msg.Post)
 	case composer.PostFailedMsg:
 		m.setFocus(paneComposer)
 		return m, m.updatePane(paneComposer, msg)

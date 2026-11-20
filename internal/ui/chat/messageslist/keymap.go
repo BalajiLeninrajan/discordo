@@ -27,6 +27,9 @@ func (m Model) ShortHelp() []keybind.Keybind {
 		if isVoiceMessage(*selectedMessage) {
 			help = append(help, keybinds.Play.Keybind)
 		}
+		if m.threadOf(*selectedMessage) != nil {
+			help = append(help, keybinds.OpenThread.Keybind)
+		}
 	}
 
 	return help
@@ -74,6 +77,9 @@ func (m Model) messageHelp(message discord.Message) (actions, manage, attachment
 
 	if message.ReferencedMessage != nil {
 		actions = append(actions, keybinds.SelectReply.Keybind)
+	}
+	if m.threadOf(message) != nil {
+		actions = append(actions, keybinds.OpenThread.Keybind)
 	}
 	if m.canReact() {
 		actions = append(actions, keybinds.React.Keybind)

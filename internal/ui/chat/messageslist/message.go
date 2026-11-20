@@ -54,7 +54,7 @@ func (m Model) writeMessage(builder *markdown.Builder, message discord.Message, 
 	}
 
 	switch message.Type {
-	case discord.DefaultMessage:
+	case discord.DefaultMessage, discord.ThreadStarterMessage:
 		if message.Reference != nil && message.Reference.Type == discord.MessageReferenceTypeForward {
 			m.drawForwardedMessage(builder, message, baseStyle, grouped)
 		} else {
@@ -66,6 +66,15 @@ func (m Model) writeMessage(builder *markdown.Builder, message discord.Message, 
 		m.drawDefaultMessage(builder, message, root, baseStyle, false)
 	case discord.ChannelPinnedMessage:
 		drawPinnedMessage(builder, message, baseStyle)
+	case discord.ThreadCreatedMessage:
+		m.drawLayout(builder, message, baseStyle, false, func() {
+			builder.Write("started a thread: ", baseStyle)
+			name := message.Content
+			if thread := m.threadOf(message); thread != nil {
+				name = thread.Name
+			}
+			builder.Write(name, baseStyle.Bold(true))
+		})
 	default:
 		m.drawLayout(builder, message, baseStyle, false, nil)
 	}

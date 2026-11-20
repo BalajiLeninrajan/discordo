@@ -145,6 +145,8 @@ type MessagesListKeybinds struct {
 
 	// Select the message that the selected message replies to.
 	SelectReply Keybind `toml:"select_reply"`
+	// Open the thread that the selected message started or announces.
+	OpenThread Keybind `toml:"open_thread"`
 	// Reply to the selected message.
 	Reply Keybind `toml:"reply"`
 	// Reply (with mention) to the selected message.
@@ -357,6 +359,7 @@ func defaultKeybinds() Keybinds {
 			ScrollKeybinds:    scrollKeybinds("K", "J", "home", "end"),
 
 			SelectReply:  key("sel reply", "s"),
+			OpenThread:   key("thread", "t"),
 			Reply:        key("reply", "R"),
 			ReplyMention: key("@reply", "r"),
 

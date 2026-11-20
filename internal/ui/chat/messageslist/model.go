@@ -233,7 +233,7 @@ func (m *Model) reset() {
 func (m *Model) setMessages(messages []discord.Message) {
 	m.items = make([]messageItem, 0, len(messages))
 	for _, message := range slices.Backward(messages) {
-		m.items = append(m.items, messageItem{message: message})
+		m.items = append(m.items, newItem(message))
 	}
 	m.items = m.withDeleted(m.items, 0)
 	m.rebuildItems()
@@ -257,7 +257,7 @@ func (m *Model) AddMessage(message discord.Message) tview.Cmd {
 	}
 
 	grouped := !separator && m.shouldGroup(previous, message)
-	m.items = append(m.items, messageItem{message: message, grouped: grouped})
+	m.items = append(m.items, messageItem{message: displayed(message), grouped: grouped})
 	return m.LoadImages()
 }
 
@@ -266,7 +266,7 @@ func (m *Model) setMessage(index int, message discord.Message) {
 		return
 	}
 
-	m.items[index] = messageItem{message: message}
+	m.items[index] = newItem(message)
 	m.rebuildItems()
 }
 
@@ -336,6 +336,12 @@ func (m Model) itemView(item *messageItem) tview.Widget {
 
 	if m.cfg.UI.MessagesList.Reactions.Enabled && !m.blocked(message.Author) {
 		body = body.Push(m.reactionsView(message.Reactions, m.reactorNamesOf(message.ID)))
+	}
+
+	if message.Thread != nil && !m.blocked(message.Author) {
+		builder := new(markdown.Builder)
+		m.drawThread(builder, *m.threadOf(*message), style)
+		body = body.Push(messageText(builder.Finish()))
 	}
 
 	var view tview.Widget = body
@@ -480,7 +486,7 @@ func (m *Model) prependOlder(msg olderMessagesLoadedMsg) tview.Cmd {
 
 	older := make([]messageItem, len(msg.older))
 	for index, message := range msg.older {
-		older[index] = messageItem{message: message}
+		older[index] = newItem(message)
 	}
 	// The deleted messages that were among them go back in, up to the oldest message shown.
 	if first := m.messageIndex(-1, 1); first != -1 {
@@ -546,7 +552,7 @@ func (m *Model) showWindow(msg windowLoadedMsg) tview.Cmd {
 
 	m.items = make([]messageItem, 0, len(msg.messages))
 	for _, message := range msg.messages {
-		m.items = append(m.items, messageItem{message: message})
+		m.items = append(m.items, newItem(message))
 	}
 	m.newerUnloaded = !msg.newest
 	// The deleted messages after the newest loaded go in with the newer messages, once they are loaded.
@@ -601,7 +607,7 @@ func (m *Model) appendNewer(msg newerMessagesLoadedMsg) tview.Cmd {
 	items := make([]messageItem, 0, len(newer)+1)
 	items = append(items, m.items[last])
 	for _, message := range newer {
-		items = append(items, messageItem{message: message})
+		items = append(items, newItem(message))
 	}
 	// The newest shown leads them so the deleted messages after it go in too.
 	items = m.withDeleted(items, before)[1:]
@@ -802,6 +808,8 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 			return m, m.selectBottom()
 		case keybind.Matches(msg, keybinds.SelectReply.Keybind):
 			m.selectReply()
+		case keybind.Matches(msg, keybinds.OpenThread.Keybind):
+			return m, m.openThread()
 		case keybind.Matches(msg, keybinds.YankID.Keybind):
 			return m, m.yankMessageID()
 		case keybind.Matches(msg, keybinds.YankContent.Keybind):

@@ -201,7 +201,7 @@ func (m Model) withDeleted(items []messageItem, before discord.MessageID) []mess
 		if next < len(items) && items[next].message.ID == message.ID {
 			continue
 		}
-		merged = append(merged, messageItem{message: message})
+		merged = append(merged, newItem(message))
 	}
 	return append(merged, items[next:]...)
 }
