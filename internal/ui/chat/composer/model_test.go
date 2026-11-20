@@ -296,6 +296,47 @@ func TestModelProcessText(t *testing.T) {
 	}
 }
 
+func TestModelProcessTextRoles(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Everyone in guild 1 may view channel 10, and the member "lead" shares the name of a role.
+	state := ningen.FromState(state.NewWithStore("", defaultstore.New()))
+	channel := discord.Channel{ID: 10, GuildID: 1}
+	for _, err := range []error{
+		state.MyselfSet(discord.User{ID: 3}, false),
+		state.GuildSet(&discord.Guild{ID: 1}, false),
+		state.MemberSet(1, &discord.Member{User: discord.User{ID: 3}}, false),
+		state.MemberSet(1, &discord.Member{User: discord.User{ID: 4, Username: "lead"}}, false),
+		state.RoleSet(1, &discord.Role{ID: 1, Permissions: discord.PermissionViewChannel}, false),
+		state.RoleSet(1, &discord.Role{ID: 2, Name: "Auto Lead", Mentionable: true}, false),
+		state.RoleSet(1, &discord.Role{ID: 5, Name: "Lead", Mentionable: true}, false),
+		state.RoleSet(1, &discord.Role{ID: 6, Name: "Mods"}, false),
+		state.RoleSet(1, &discord.Role{ID: 7, Name: "here", Mentionable: true}, false),
+		state.ChannelSet(&channel, false),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := NewModel(cfg, state)
+	for _, tt := range []struct{ name, in, want string }{
+		{"role", "@AutoLead hi", "<@&2> hi"},
+		{"member first", "@lead", "<@4>"},
+		{"not mentionable", "@Mods", "@Mods"},
+		{"named like @here", "@here", "@here"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := c.processText(&channel, []byte(tt.in)); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestModelQuery(t *testing.T) {
 	c, _ := newTestModel(t)
 	for _, test := range []struct {

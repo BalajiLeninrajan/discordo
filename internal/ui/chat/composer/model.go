@@ -371,12 +371,27 @@ func (m Model) expandMentions(channel *discord.Channel, source []byte) []byte {
 	})
 }
 
-// mention returns the mention of the user called name who can see channel, or "" if there is none.
+// mention returns the mention of the user called name who can see channel, else of the role called name that may be mentioned there, or "" if there is neither.
 func (m Model) mention(channel *discord.Channel, name string) string {
 	if channel.Type == discord.DirectMessage || channel.Type == discord.GroupDM {
 		return m.privateMention(channel, name)
 	}
 
+	if mention := m.memberMention(channel, name); mention != "" {
+		return mention
+	}
+
+	for _, role := range mentions.MentionableRoles(m.state, channel) {
+		if strings.EqualFold(mentions.RoleName(role), name) {
+			return role.ID.Mention()
+		}
+	}
+
+	return ""
+}
+
+// memberMention returns the mention of the member called name who can see channel, or "" if there is none.
+func (m Model) memberMention(channel *discord.Channel, name string) string {
 	var mention string
 	_ = m.state.MemberStore.Each(channel.GuildID, func(member *discord.Member) bool {
 		if !strings.EqualFold(member.User.Username, name) {
