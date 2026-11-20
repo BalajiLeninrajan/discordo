@@ -1,5 +1,8 @@
 # Discordo &middot; [![discord](https://img.shields.io/discord/1297292231299956788?color=5865F2&logo=discord&logoColor=white)](https://discord.com/invite/VzF9UFn2aB) [![license](https://img.shields.io/github/license/ayn2op/discordo?logo=github)](https://github.com/ayn2op/discordo/blob/master/LICENSE)
 
+> [!NOTE]
+> This is my personal fork of [ayn2op/discordo](https://github.com/ayn2op/discordo). It rebases onto upstream and carries [changes upstream doesn't have](https://github.com/ayn2op/discordo/compare/main...BalajiLeninrajan:discordo:main). The prebuilt binaries and package managers below install upstream. To run the fork, build it from source with `git clone https://github.com/BalajiLeninrajan/discordo`. Report bugs in the fork here, not upstream.
+
 Discordo is a lightweight, secure, and feature-rich Discord terminal client.
 
 ![Preview](.github/preview.png)
