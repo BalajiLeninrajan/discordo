@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/ayn2op/arikawa/v3/discord"
 	"github.com/ayn2op/arikawa/v3/state"
@@ -30,12 +31,13 @@ const (
 )
 
 type mention struct {
-	username, name string
-	avatar         discord.URL
-	style          tview.Style
+	// insert is the text that completes the mention, like "@name".
+	insert, name string
+	avatar       discord.URL
+	style        tview.Style
 }
 
-func (m mention) Insert() string { return "@" + m.username }
+func (m mention) Insert() string { return m.insert }
 
 func (m mention) Line(images map[discord.URL]tviewimage.Widget) []text.Span {
 	line := []text.Span{{Text: m.name, Style: m.style}}
@@ -47,13 +49,15 @@ func (m mention) Line(images map[discord.URL]tviewimage.Widget) []text.Span {
 	return line
 }
 
-// Items returns up to limit users in channel matching query, best first, or its recent authors if query is empty, and the command that loads their avatars, or nil.
+// Items returns up to limit users and roles in channel matching query, best first, or its recent authors if query is empty, and the command that loads their avatars, or nil.
 func Items(cfg *config.Config, s *ningen.State, channel *discord.Channel, query string, limit int) ([]autocomplete.Item, tview.Cmd) {
 	var items []autocomplete.Item
 	images := images.RequestedMsg{Squares: map[discord.URL]uint{}}
 	for _, mention := range mentions(s, channel, query, limit) {
 		items = append(items, mention)
-		images.Squares[mention.avatar] = avatarRows
+		if mention.avatar != "" {
+			images.Squares[mention.avatar] = avatarRows
+		}
 	}
 
 	if !cfg.UI.Autocomplete.Mentions.Preview || len(images.Squares) == 0 {
@@ -88,13 +92,20 @@ func mentions(s *ningen.State, channel *discord.Channel, query string, limit int
 		return nil
 	}
 
-	for _, r := range fuzzy.FindFrom(query, memberList(members)) {
-		if len(items) == limit {
-			break
+	roles := MentionableRoles(s, channel)
+	memberMatches, roleMatches := fuzzy.FindFrom(query, memberList(members)), fuzzy.FindFrom(query, roleList(roles))
+	// Both match lists are sorted by score, so merging them keeps the best first.
+	for len(items) < limit && (len(memberMatches) > 0 || len(roleMatches) > 0) {
+		if len(roleMatches) > 0 && (len(memberMatches) == 0 || roleMatches[0].Score > memberMatches[0].Score) {
+			items = append(items, roleMention(roles, roles[roleMatches[0].Index]))
+			roleMatches = roleMatches[1:]
+			continue
 		}
 
-		if ChannelHasUser(s, channel.ID, members[r.Index].User.ID) {
-			items = append(items, memberMention(s, channel.GuildID, &members[r.Index]))
+		member := &members[memberMatches[0].Index]
+		memberMatches = memberMatches[1:]
+		if ChannelHasUser(s, channel.ID, member.User.ID) {
+			items = append(items, memberMention(s, channel.GuildID, member))
 		}
 	}
 	return items
@@ -143,11 +154,71 @@ func memberMention(s *ningen.State, gID discord.GuildID, member *discord.Member)
 		style = style.Foreground(tcell.NewHexColor(int32(color)))
 	}
 
-	return mention{member.User.Username, cmp.Or(member.Nick, member.User.DisplayName, member.User.Username), avatarURL(member.User), style}
+	return mention{"@" + member.User.Username, cmp.Or(member.Nick, member.User.DisplayName, member.User.Username), avatarURL(member.User), style}
 }
 
 func userMention(s *ningen.State, user *discord.User) mention {
-	return mention{user.Username, user.DisplayOrUsername(), avatarURL(*user), presenceStyle(s, discord.NullGuildID, user.ID)}
+	return mention{"@" + user.Username, user.DisplayOrUsername(), avatarURL(*user), presenceStyle(s, discord.NullGuildID, user.ID)}
+}
+
+// roleMention inserts the role by its name, or by its raw mention if it has no RoleName or another role in roles shares it.
+func roleMention(roles []discord.Role, role discord.Role) mention {
+	name := RoleName(role)
+	shared := slices.ContainsFunc(roles, func(other discord.Role) bool {
+		return other.ID != role.ID && strings.EqualFold(RoleName(other), name)
+	})
+	insert := "@" + name
+	if name == "" || shared {
+		insert = role.ID.Mention()
+	}
+
+	style := tcell.StyleDefault
+	if role.Color != discord.NullColor {
+		style = style.Foreground(tcell.NewHexColor(int32(role.Color)))
+	}
+	return mention{insert: insert, name: "@" + role.Name, style: style}
+}
+
+// RoleName returns the name of role without the characters a mention cannot hold, as in "@AutoLead" for the role "Auto Lead", or "" if that is "everyone" or "here", which Discord parses as itself.
+func RoleName(role discord.Role) string {
+	name := strings.Map(func(r rune) rune {
+		if isMentionRune(r) {
+			return r
+		}
+		return -1
+	}, role.Name)
+	if strings.EqualFold(name, "everyone") || strings.EqualFold(name, "here") {
+		return ""
+	}
+	return name
+}
+
+func isMentionRune(r rune) bool {
+	return r < 128 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_')
+}
+
+// MentionableRoles returns the roles of the guild of channel that the current user may mention there: all of them with the Mention Everyone permission, otherwise the mentionable ones.
+func MentionableRoles(s *ningen.State, channel *discord.Channel) []discord.Role {
+	if !channel.GuildID.IsValid() {
+		return nil
+	}
+
+	roles, err := s.Cabinet.Roles(channel.GuildID)
+	if err != nil {
+		slog.Error("failed to get roles from state", "guild_id", channel.GuildID, "err", err)
+		return nil
+	}
+
+	var everyone bool
+	if me, _ := s.Cabinet.Me(); me != nil {
+		perms, err := s.Permissions(channel.ID, me.ID)
+		everyone = err == nil && perms.Has(discord.PermissionMentionEveryone)
+	}
+
+	return slices.DeleteFunc(slices.Clone(roles), func(role discord.Role) bool {
+		// The @everyone role shares the guild's ID and is mentioned as plain text.
+		return discord.GuildID(role.ID) == channel.GuildID || !everyone && !role.Mentionable
+	})
 }
 
 func avatarURL(user discord.User) discord.URL {
@@ -186,3 +257,9 @@ type userList []discord.User
 func (ul userList) String(i int) string { return ul[i].DisplayName + ul[i].Tag() }
 
 func (ul userList) Len() int { return len(ul) }
+
+type roleList []discord.Role
+
+func (rl roleList) String(i int) string { return rl[i].Name }
+
+func (rl roleList) Len() int { return len(rl) }
