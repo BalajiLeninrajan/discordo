@@ -84,6 +84,7 @@ func (m Model) messageHelp(message discord.Message) (actions, manage, attachment
 	if m.canReact() {
 		actions = append(actions, keybinds.React.Keybind)
 	}
+	actions = append(actions, keybinds.ToggleRead.Keybind)
 	if len(message.Reactions) != 0 {
 		actions = append(actions, keybinds.WhoReacted.Keybind)
 	}
