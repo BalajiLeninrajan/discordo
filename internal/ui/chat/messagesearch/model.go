@@ -1,4 +1,4 @@
-// Package messagesearch searches the messages of a channel through Discord's search and picks one of the results.
+// Package messagesearch searches the messages of a channel, or of its server, through Discord's search and picks one of the results.
 package messagesearch
 
 import (
@@ -42,6 +42,8 @@ type Model struct {
 	// results are the matching messages loaded so far, newest first, of total.
 	results []discord.Message
 	total   uint
+	// threads are the threads the results are in, which the state may not have.
+	threads map[discord.ChannelID]discord.Channel
 	// cursor is the selected result and scroll how far the results are scrolled.
 	cursor int
 	scroll viewport.ScrollState
@@ -56,12 +58,28 @@ func NewModel(cfg *config.Config, state *ningen.State) Model {
 	return Model{cfg: cfg, state: state}
 }
 
-// Open searches channel. The query and results are kept if it is the channel searched last, to go through them again.
+// Open searches channel. The query and results are kept to go through them again if it is the channel searched last,
+// or a channel of the same server and the search was not only of the channel searched last.
 func (m *Model) Open(channel *discord.Channel) {
-	if m.channel != nil && channel != nil && m.channel.ID == channel.ID {
+	if m.channel != nil && channel != nil && (m.channel.ID == channel.ID || m.spans(channel.GuildID)) {
+		m.channel = channel
 		return
 	}
 	*m = Model{cfg: m.cfg, state: m.state, channel: channel, request: m.request}
+}
+
+// spans reports whether the search was in the server with guildID beyond the channel it was opened in.
+func (m Model) spans(guildID discord.GuildID) bool {
+	if m.searched == "" || !guildID.IsValid() || m.channel.GuildID != guildID {
+		return false
+	}
+	return len(m.data.ChannelIDs) != 1 || m.data.ChannelIDs[0] != m.channel.ID
+}
+
+// searchResponse is a page of results. Unlike api.SearchResponse, it has the threads the results are in.
+type searchResponse struct {
+	api.SearchResponse
+	Threads []discord.Channel `json:"threads"`
 }
 
 var _ tview.Model[Model] = Model{}
@@ -118,7 +136,11 @@ func (m *Model) submit() tview.Cmd {
 			return nil
 		}
 		result := m.results[m.cursor]
-		return cmd.Task(func() tview.Msg { return SelectedMsg{ChannelID: result.ChannelID, MessageID: result.ID} })
+		selected := SelectedMsg{ChannelID: result.ChannelID, MessageID: result.ID}
+		if thread, ok := m.threads[result.ChannelID]; ok {
+			selected.Thread = &thread
+		}
+		return cmd.Task(func() tview.Msg { return selected })
 	}
 
 	data, err := m.parse(query)
@@ -127,7 +149,7 @@ func (m *Model) submit() tview.Cmd {
 		return nil
 	}
 
-	m.searched, m.data, m.results, m.total, m.err = query, data, nil, 0, nil
+	m.searched, m.data, m.results, m.threads, m.total, m.err = query, data, nil, nil, 0, nil
 	m.cursor, m.scroll = 0, viewport.ScrollState{}
 	return m.search(0)
 }
@@ -175,7 +197,7 @@ func (m *Model) search(offset uint) tview.Cmd {
 		if channel.GuildID.IsValid() {
 			endpoint = api.EndpointGuilds + channel.GuildID.String() + "/messages/search"
 		}
-		response, err := m.state.RequestJSON[api.SearchResponse]("GET", endpoint, httputil.WithSchema(m.state.Client, data))
+		response, err := m.state.RequestJSON[searchResponse]("GET", endpoint, httputil.WithSchema(m.state.Client, data))
 		if err != nil {
 			slog.Error("failed to search messages", "channel_id", channel.ID, "err", err)
 			return resultsMsg{request: request, offset: offset, err: err}
@@ -188,7 +210,7 @@ func (m *Model) search(offset uint) tview.Cmd {
 				results = append(results, hit[0])
 			}
 		}
-		return resultsMsg{request: request, offset: offset, results: results, total: response.TotalResults}
+		return resultsMsg{request: request, offset: offset, results: results, threads: response.Threads, total: response.TotalResults}
 	})
 }
 
@@ -210,6 +232,12 @@ func (m *Model) setResults(msg resultsMsg) {
 		m.results = append(m.results, msg.results...)
 	}
 	m.total = msg.total
+	for _, thread := range msg.threads {
+		if m.threads == nil {
+			m.threads = make(map[discord.ChannelID]discord.Channel)
+		}
+		m.threads[thread.ID] = thread
+	}
 	// An empty page ends the results, whatever the total said.
 	if len(msg.results) == 0 {
 		m.total = uint(len(m.results))
@@ -234,15 +262,33 @@ func (m Model) status() string {
 	}
 }
 
-// resultView shows who wrote message and when, above what it says.
+// resultView shows who wrote message, when, and where if it is not the channel searched from, above what it says.
 func (m Model) resultView(message discord.Message) tview.Widget {
 	theme := m.cfg.Theme.MessagesList
 	when := message.Timestamp.Time().In(time.Local).Format(m.cfg.DateSeparator.Format + " " + m.cfg.Timestamps.Format)
-	return text.Rich(
-		text.Span{Text: m.authorName(message), Style: theme.AuthorStyle.Style},
+	spans := []text.Span{{Text: m.authorName(message), Style: theme.AuthorStyle.Style}}
+	if name := m.channelName(message.ChannelID); name != "" {
+		spans = append(spans, text.Span{Text: "  #" + name, Style: theme.MentionStyle.Style})
+	}
+	spans = append(spans,
 		text.Span{Text: "  " + when + "\n", Style: theme.MessageStyle.Dim(true)},
 		text.Span{Text: snippet(message), Style: theme.MessageStyle.Style},
-	).Wrapping(text.WrappingNone)
+	)
+	return text.Rich(spans...).Wrapping(text.WrappingNone)
+}
+
+// channelName returns the name of the channel with channelID, or "" if it is the channel searched from or unknown.
+func (m Model) channelName(channelID discord.ChannelID) string {
+	if m.channel == nil || channelID == m.channel.ID {
+		return ""
+	}
+	if thread, ok := m.threads[channelID]; ok {
+		return thread.Name
+	}
+	if channel, err := m.state.Cabinet.Channel(channelID); err == nil {
+		return channel.Name
+	}
+	return ""
 }
 
 // authorName returns the nickname of the author of message in the channel's guild, or their name.

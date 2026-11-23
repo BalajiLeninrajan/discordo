@@ -7,20 +7,24 @@ import (
 	"time"
 
 	"github.com/ayn2op/arikawa/v3/discord"
+	"github.com/ayn2op/discordo/internal/ui"
 	"github.com/ayn2op/discordo/internal/ui/autocomplete/mentions"
 	"github.com/ayn2op/tview/text"
 )
 
 // searchData is what a search asks Discord for. Unlike api.SearchData, the filters Discord takes more than once are lists, each value sent as a parameter of its own.
 type searchData struct {
-	Offset    uint              `schema:"offset,omitempty"`
-	Content   string            `schema:"content,omitempty"`
-	ChannelID discord.ChannelID `schema:"channel_id,omitempty"`
-	AuthorIDs []discord.UserID  `schema:"author_id,omitempty"`
-	Mentions  []discord.UserID  `schema:"mentions,omitempty"`
-	Has       []string          `schema:"has,omitempty"`
-	MaxID     discord.MessageID `schema:"max_id,omitempty"`
-	MinID     discord.MessageID `schema:"min_id,omitempty"`
+	Offset  uint   `schema:"offset,omitempty"`
+	Content string `schema:"content,omitempty"`
+	// ChannelIDs are the channels searched, or none for the whole guild.
+	ChannelIDs []discord.ChannelID `schema:"channel_id,omitempty"`
+	AuthorIDs  []discord.UserID    `schema:"author_id,omitempty"`
+	Mentions   []discord.UserID    `schema:"mentions,omitempty"`
+	Has        []string            `schema:"has,omitempty"`
+	MaxID      discord.MessageID   `schema:"max_id,omitempty"`
+	MinID      discord.MessageID   `schema:"min_id,omitempty"`
+	// anywhere reports whether in:any asks for the whole guild, whatever channels in: also names.
+	anywhere bool `schema:"-"`
 }
 
 // addOnce appends value to values unless it is already there.
@@ -53,6 +57,7 @@ type filter struct {
 var filters = []filter{
 	{"from", "user"},
 	{"mentions", "user"},
+	{"in", "channel, or any for the server"},
 	{"has", "link, file, image, video, embed, ..."},
 	{"before", "date"},
 	{"during", "date"},
@@ -65,8 +70,14 @@ var hasValues = []string{"link", "embed", "file", "image", "video", "sound", "st
 // dateLayout is how dates are typed: year, month and day.
 const dateLayout = "2006-01-02"
 
-// maxUserSuggestions is how many users from: and mentions: suggest.
-const maxUserSuggestions = 10
+// maxUserSuggestions is how many users from: and mentions: suggest, and maxChannelSuggestions how many channels in: does.
+const (
+	maxUserSuggestions    = 10
+	maxChannelSuggestions = 10
+)
+
+// anywhere is the value of in: that searches the whole server.
+const anywhere = "any"
 
 // suggestion completes the word the cursor is in.
 type suggestion struct {
@@ -112,6 +123,8 @@ func (m Model) suggestions() []suggestion {
 	switch key {
 	case "from", "mentions":
 		return m.userSuggestions(key, value)
+	case "in":
+		return m.channelSuggestions(value)
 	case "has":
 		return valueSuggestions(key, value, hasValues, nil)
 	default:
@@ -126,6 +139,10 @@ func (m Model) filterSuggestions(prefix string) []suggestion {
 	theme := m.cfg.Theme.MessagesList
 	var suggestions []suggestion
 	for _, f := range filters {
+		// A DM is the only channel there is to search.
+		if f.key == "in" && (m.channel == nil || !m.channel.GuildID.IsValid()) {
+			continue
+		}
 		if strings.HasPrefix(f.key, strings.ToLower(prefix)) {
 			suggestions = append(suggestions, suggestion{insert: f.key + ":", label: []text.Span{
 				{Text: f.key + ":", Style: theme.MentionStyle.Style},
@@ -167,6 +184,45 @@ func (m Model) userSuggestions(key, name string) []suggestion {
 	return suggestions
 }
 
+// channelSuggestions returns any, which searches the whole server, and the channels of the server whose names start with prefix.
+func (m Model) channelSuggestions(prefix string) []suggestion {
+	if m.channel == nil || !m.channel.GuildID.IsValid() {
+		return nil
+	}
+	prefix = strings.ToLower(strings.TrimPrefix(prefix, "#"))
+	dim := m.cfg.Theme.MessagesList.MessageStyle.Dim(true)
+
+	var suggestions []suggestion
+	if strings.HasPrefix(anywhere, prefix) {
+		suggestions = append(suggestions, suggestion{insert: "in:" + anywhere, final: true, label: []text.Span{
+			{Text: anywhere},
+			{Text: "  the whole server", Style: dim},
+		}})
+	}
+	for _, channel := range m.searchableChannels() {
+		if len(suggestions) == maxChannelSuggestions {
+			break
+		}
+		if strings.HasPrefix(strings.ToLower(channel.Name), prefix) {
+			suggestions = append(suggestions, suggestion{insert: "in:" + channel.Name, final: true, label: []text.Span{{Text: "#" + channel.Name}}})
+		}
+	}
+	return suggestions
+}
+
+// searchableChannels returns the channels of the server the user can see, in the order of the guilds tree.
+// A channel whose name has a space, as a voice channel or thread can, cannot be typed as one word and is left out.
+func (m Model) searchableChannels() []discord.Channel {
+	channels, _ := m.state.Cabinet.Channels(m.channel.GuildID)
+	channels = slices.DeleteFunc(slices.Clone(channels), func(channel discord.Channel) bool {
+		return channel.Type == discord.GuildCategory ||
+			strings.ContainsAny(channel.Name, " \t") ||
+			!m.state.HasPermissions(channel.ID, discord.PermissionViewChannel)
+	})
+	ui.SortGuildChannels(channels)
+	return channels
+}
+
 // complete replaces the word the cursor is in with s, moving the cursor after it.
 func (m *Model) complete(s suggestion) {
 	start, end := word(m.query, m.queryCursor)
@@ -197,7 +253,7 @@ func (m Model) unfinished() bool {
 // parse returns the search the query asks for: its filters, and the rest of it as the content.
 // A filter typed more than once sends each value, which Discord combines as its own search does, and dates narrow the search to where they overlap.
 func (m Model) parse(query string) (searchData, error) {
-	data := searchData{ChannelID: m.channel.ID}
+	var data searchData
 	var content []string
 	for _, word := range strings.Fields(query) {
 		if _, _, ok := filterOf(word); !ok {
@@ -209,6 +265,13 @@ func (m Model) parse(query string) (searchData, error) {
 		}
 	}
 	data.Content = strings.Join(content, " ")
+	// Without in:, the search is of the channel it was opened in.
+	switch {
+	case data.anywhere:
+		data.ChannelIDs = nil
+	case len(data.ChannelIDs) == 0:
+		data.ChannelIDs = []discord.ChannelID{m.channel.ID}
+	}
 	return data, nil
 }
 
@@ -229,6 +292,26 @@ func (m Model) applyFilter(data *searchData, word string) error {
 			data.AuthorIDs = addOnce(data.AuthorIDs, userID)
 		} else {
 			data.Mentions = addOnce(data.Mentions, userID)
+		}
+	case "in":
+		if !m.channel.GuildID.IsValid() {
+			return fmt.Errorf("in: only works in a server")
+		}
+		name := strings.TrimPrefix(value, "#")
+		if strings.EqualFold(value, anywhere) {
+			data.anywhere = true
+			break
+		}
+		// Channels of different categories may share a name, and each is searched.
+		found := false
+		for _, channel := range m.searchableChannels() {
+			if strings.EqualFold(channel.Name, name) {
+				data.ChannelIDs = addOnce(data.ChannelIDs, channel.ID)
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("no channel #%s here", name)
 		}
 	case "has":
 		if !slices.Contains(hasValues, strings.ToLower(value)) {

@@ -64,8 +64,10 @@ type Model struct {
 	attachmentsPicker attachmentspicker.Model
 	// reactionsPicker picks an emoji to react to the selected message with.
 	reactionsPicker reactionspicker.Model
-	// messageSearch searches the messages of the selected channel.
+	// messageSearch searches the messages of the selected channel or its server.
 	messageSearch messagesearch.Model
+	// pendingJump is the search result to select once its channel, which is being opened, loads, or zero.
+	pendingJump messagesearch.SelectedMsg
 	// forumPosts lists, searches and starts the posts of a forum.
 	forumPosts forumposts.Model
 
@@ -262,7 +264,16 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 		}
 		title := ui.ChannelToString(msg.Channel, m.cfg.Icons, m.state) + " - " + consts.Name
 		// Not shown again soon.
-		return m, cmd.Batch{m.clearImages(), cmd.SetTitle(title), m.messagesList.SetChannel(&msg.Channel, msg.Messages), membersCmd}
+		commands := cmd.Batch{m.clearImages(), cmd.SetTitle(title), m.messagesList.SetChannel(&msg.Channel, msg.Messages), membersCmd}
+
+		// Opening another channel before the one of a search result loaded drops the result.
+		jump := m.pendingJump
+		m.pendingJump = messagesearch.SelectedMsg{}
+		if jump.ChannelID == msg.Channel.ID {
+			m.setFocus(paneMessagesList)
+			commands = append(commands, m.messagesList.JumpTo(jump.ChannelID, jump.MessageID))
+		}
+		return m, commands
 	case messageslist.Msg:
 		return m, m.updatePane(paneMessagesList, msg)
 	case tview.ResizeMsg:
@@ -336,7 +347,7 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 	case messagesearch.SelectedMsg:
 		m.overlay = overlayNone
 		m.setFocus(paneMessagesList)
-		return m, m.messagesList.JumpTo(msg.ChannelID, msg.MessageID)
+		return m, m.showSearchResult(msg)
 	case messagesearch.CancelMsg:
 		m.overlay = overlayNone
 		return m, nil
