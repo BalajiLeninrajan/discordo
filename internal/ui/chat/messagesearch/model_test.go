@@ -226,3 +226,54 @@ func TestModelView(t *testing.T) {
 		}
 	})
 }
+
+func TestModelServerResults(t *testing.T) {
+	// searchedIn returns m after searching for query in guild 2 with results in channel 1 and thread 8.
+	searchedIn := func(t *testing.T, query string) Model {
+		t.Helper()
+		m, _ := update(inGuild(t, newTestModel(t)), queryMsg{query: query, cursor: len(query)}, submitMsg{})
+		thread := discord.Channel{ID: 8, GuildID: 2, Name: "a thread", Type: discord.GuildPublicThread}
+		results := []discord.Message{{ID: 5, ChannelID: 8}, {ID: 4, ChannelID: 1}}
+		m, _ = m.Update(resultsMsg{request: m.request, results: results, threads: []discord.Channel{thread}, total: 2})
+		return m
+	}
+
+	t.Run("names the channel of a result in another", func(t *testing.T) {
+		m := searchedIn(t, "in:any lunch")
+		if m.channelName(8) != "a thread" || m.channelName(1) != "" || m.channelName(3) != "random" {
+			t.Fatalf("names = %q, %q, %q", m.channelName(8), m.channelName(1), m.channelName(3))
+		}
+	})
+
+	t.Run("a result in a thread carries it", func(t *testing.T) {
+		_, command := searchedIn(t, "in:any lunch").Update(submitMsg{})
+		msg := command.(cmd.Task)().(SelectedMsg)
+		if msg.ChannelID != 8 || msg.MessageID != 5 || msg.Thread == nil || msg.Thread.ID != 8 {
+			t.Fatalf("msg = %#v", msg)
+		}
+	})
+
+	t.Run("a server search is kept in another channel of the server", func(t *testing.T) {
+		m := searchedIn(t, "in:any lunch")
+		m.Open(&discord.Channel{ID: 3, GuildID: 2})
+		if m.searched != "in:any lunch" || len(m.results) != 2 || m.channel.ID != 3 {
+			t.Fatalf("searched = %q, results = %d, channel = %v", m.searched, len(m.results), m.channel.ID)
+		}
+	})
+
+	t.Run("a channel search is not", func(t *testing.T) {
+		m := searchedIn(t, "lunch")
+		m.Open(&discord.Channel{ID: 3, GuildID: 2})
+		if m.searched != "" || len(m.results) != 0 {
+			t.Fatalf("searched = %q, results = %d", m.searched, len(m.results))
+		}
+	})
+
+	t.Run("nor a server search in another server", func(t *testing.T) {
+		m := searchedIn(t, "in:any lunch")
+		m.Open(&discord.Channel{ID: 30, GuildID: 20})
+		if m.searched != "" {
+			t.Fatalf("searched = %q", m.searched)
+		}
+	})
+}

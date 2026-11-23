@@ -11,6 +11,7 @@ import (
 	"github.com/ayn2op/arikawa/v3/utils/ws"
 	"github.com/ayn2op/discordo/internal/ui/chat/composer"
 	"github.com/ayn2op/discordo/internal/ui/chat/guildstree"
+	"github.com/ayn2op/discordo/internal/ui/chat/messagesearch"
 	"github.com/ayn2op/discordo/internal/ui/chat/reactionspicker"
 	"github.com/ayn2op/ningen/v3"
 	"github.com/ayn2op/tview"
@@ -94,6 +95,18 @@ func (m *Model) openThread(thread discord.Channel) tview.Cmd {
 		}
 	}
 	return m.navigateToChannel(thread.ID)
+}
+
+// showSearchResult selects the message of a search result, opening its channel first if it is another.
+func (m *Model) showSearchResult(msg messagesearch.SelectedMsg) tview.Cmd {
+	if m.selectedChannel != nil && m.selectedChannel.ID == msg.ChannelID {
+		return m.messagesList.JumpTo(msg.ChannelID, msg.MessageID)
+	}
+	m.pendingJump = msg
+	if msg.Thread != nil {
+		return m.openThread(*msg.Thread)
+	}
+	return m.navigateToChannel(msg.ChannelID)
 }
 
 // paneMsg is what a pane's widget made of a mouse message within it. A left mouse button press also focuses the pane.

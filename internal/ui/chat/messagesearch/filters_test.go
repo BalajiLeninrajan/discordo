@@ -118,7 +118,7 @@ func TestModelParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := time.Date(2026, 3, 4, 0, 0, 0, 0, time.Local)
-	if data.Content != "see you" || !slices.Equal(data.Mentions, []discord.UserID{5}) || !slices.Equal(data.Has, []string{"link"}) || data.ChannelID != m.channel.ID {
+	if data.Content != "see you" || !slices.Equal(data.Mentions, []discord.UserID{5}) || !slices.Equal(data.Has, []string{"link"}) || !slices.Equal(data.ChannelIDs, []discord.ChannelID{m.channel.ID}) {
 		t.Fatalf("data = %+v", data)
 	}
 	if !data.MinID.Time().Equal(day) || !data.MaxID.Time().Equal(day.AddDate(0, 0, 1)) {
@@ -161,4 +161,95 @@ func TestModelParse(t *testing.T) {
 			t.Errorf("parse(%q) took it", query)
 		}
 	}
+}
+
+// inGuild returns m searching #general, channel 1 of guild 2, which bob owns, next to #random, a voice channel and a category.
+func inGuild(t *testing.T, m Model) Model {
+	t.Helper()
+	me := discord.User{ID: 10, Username: "bob"}
+	guild := discord.Guild{ID: 2, Name: "guild", OwnerID: me.ID}
+	channels := []discord.Channel{
+		{ID: 1, GuildID: 2, Name: "general", Type: discord.GuildText, Position: 1},
+		{ID: 3, GuildID: 2, Name: "random", Type: discord.GuildText, Position: 2},
+		{ID: 4, GuildID: 2, Name: "Voice Chat", Type: discord.GuildVoice, Position: 3},
+		{ID: 9, GuildID: 2, Name: "text", Type: discord.GuildCategory, Position: 0},
+	}
+	if err := m.state.MyselfSet(me, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.state.GuildSet(&guild, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.state.MemberSet(guild.ID, &discord.Member{User: me}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.state.RoleSet(guild.ID, &discord.Role{ID: discord.RoleID(guild.ID)}, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := range channels {
+		if err := m.state.ChannelSet(&channels[i], false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.Open(&channels[0])
+	return m
+}
+
+func TestModelIn(t *testing.T) {
+	m := inGuild(t, newTestModel(t))
+
+	t.Run("suggests any and the channels", func(t *testing.T) {
+		if got := strings.Join(inserts(typed(m, "in:").suggestions()), " "); got != "in:any in:general in:random" {
+			t.Fatalf("suggestions = %q", got)
+		}
+		if got := strings.Join(inserts(typed(m, "in:#ra").suggestions()), " "); got != "in:random" {
+			t.Fatalf("suggestions = %q", got)
+		}
+	})
+
+	tests := []struct {
+		query string
+		want  []discord.ChannelID
+	}{
+		{"lunch", []discord.ChannelID{1}},
+		{"in:random lunch", []discord.ChannelID{3}},
+		{"in:#Random in:general in:random", []discord.ChannelID{3, 1}},
+		{"in:random in:any", nil},
+	}
+	for _, test := range tests {
+		data, err := m.parse(test.query)
+		if err != nil {
+			t.Fatalf("parse(%q): %v", test.query, err)
+		}
+		if !slices.Equal(data.ChannelIDs, test.want) {
+			t.Errorf("parse(%q) channels = %v, want %v", test.query, data.ChannelIDs, test.want)
+		}
+	}
+
+	t.Run("any sends no channel", func(t *testing.T) {
+		data, _ := m.parse("in:any lunch")
+		values, err := new(httputil.DefaultSchema).Encode(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if values.Has("channel_id") || values.Get("content") != "lunch" {
+			t.Fatalf("values = %v", values)
+		}
+	})
+
+	for _, query := range []string{"in:", "in:nowhere", "in:text"} {
+		if _, err := m.parse(query); err == nil {
+			t.Errorf("parse(%q) took it", query)
+		}
+	}
+
+	t.Run("not in a DM", func(t *testing.T) {
+		dm := inDM(t, newTestModel(t))
+		if _, err := dm.parse("in:any"); err == nil {
+			t.Fatal("a DM took in:")
+		}
+		if got := inserts(typed(dm, "i").suggestions()); len(got) != 0 {
+			t.Fatalf("a DM suggests %v", got)
+		}
+	})
 }

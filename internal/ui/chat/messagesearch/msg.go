@@ -8,10 +8,11 @@ import (
 // Msg is implemented by the messages the search sends itself, which must reach it even if it was closed while they were on their way.
 type Msg interface{ isMsg() }
 
-// SelectedMsg asks to show the message with MessageID in ChannelID.
+// SelectedMsg asks to show the message with MessageID in ChannelID. Thread is the channel if it is a thread, which the state may not have, or nil.
 type SelectedMsg struct {
 	ChannelID discord.ChannelID
 	MessageID discord.MessageID
+	Thread    *discord.Channel
 }
 
 type CancelMsg struct{}
@@ -21,6 +22,7 @@ type resultsMsg struct {
 	request int
 	offset  uint
 	results []discord.Message
+	threads []discord.Channel
 	total   uint
 	err     error
 }
