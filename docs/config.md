@@ -957,6 +957,12 @@ Open the thread that the selected message started or announces.
 
 Default: `"t"`
 
+### keybinds.messages_list.toggle_read
+
+Mark the channel read up to the selected message if it is unread, or else unread from it on.
+
+Default: `"m"`
+
 ### keybinds.messages_list.reply
 
 Reply to the selected message.

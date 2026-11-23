@@ -810,6 +810,8 @@ func (m Model) update(msg tview.Msg) (Model, tview.Cmd) {
 			m.selectReply()
 		case keybind.Matches(msg, keybinds.OpenThread.Keybind):
 			return m, m.openThread()
+		case keybind.Matches(msg, keybinds.ToggleRead.Keybind):
+			return m, m.toggleRead()
 		case keybind.Matches(msg, keybinds.YankID.Keybind):
 			return m, m.yankMessageID()
 		case keybind.Matches(msg, keybinds.YankContent.Keybind):

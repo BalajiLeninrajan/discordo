@@ -148,6 +148,8 @@ type MessagesListKeybinds struct {
 	SelectReply Keybind `toml:"select_reply"`
 	// Open the thread that the selected message started or announces.
 	OpenThread Keybind `toml:"open_thread"`
+	// Mark the channel read up to the selected message if it is unread, or else unread from it on.
+	ToggleRead Keybind `toml:"toggle_read"`
 	// Reply to the selected message.
 	Reply Keybind `toml:"reply"`
 	// Reply (with mention) to the selected message.
@@ -361,6 +363,7 @@ func defaultKeybinds() Keybinds {
 
 			SelectReply:  key("sel reply", "s"),
 			OpenThread:   key("thread", "t"),
+			ToggleRead:   key("toggle read", "m"),
 			Reply:        key("reply", "R"),
 			ReplyMention: key("@reply", "r"),
 
