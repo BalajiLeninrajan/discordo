@@ -222,19 +222,54 @@ func (m Model) hasUnread(channel discord.Channel) bool {
 	return !channel.GuildID.IsValid() || m.state.HasPermissions(channel.ID, discord.PermissionViewChannel)
 }
 
-// markRead marks the unread channels under node read up to their newest message.
-func (m Model) markRead(node *tree.Node) tview.Cmd {
-	channels := m.unreadChannels(node)
-	if len(channels) == 0 {
-		return nil
+// toggleRead marks the unread channels under node read, or, if none is, marks the channel node is unread.
+func (m Model) toggleRead(node *tree.Node) tview.Cmd {
+	if channels := m.unreadChannels(node); len(channels) != 0 {
+		return m.markRead(channels)
 	}
+	return m.markUnread(node)
+}
 
+// markRead marks channels read up to their newest message.
+func (m Model) markRead(channels []discord.Channel) tview.Cmd {
 	return cmd.Task(func() tview.Msg {
 		for index, channel := range channels {
 			if index > 0 {
 				time.Sleep(markReadInterval)
 			}
 			m.state.ReadState.MarkRead(channel.ID, m.state.LastMessage(channel.ID))
+		}
+		return nil
+	})
+}
+
+// markUnread marks the channel node is unread from its newest message, as Discord's "Mark Unread" on that message does.
+// A category, guild, folder, the direct messages and a forum, whose newest messages are posts, are left as they are.
+func (m Model) markUnread(node *tree.Node) tview.Cmd {
+	if node == nil {
+		return nil
+	}
+	channelID, ok := node.Reference().(discord.ChannelID)
+	if !ok {
+		return nil
+	}
+	channel, err := m.state.Cabinet.Channel(channelID)
+	if err != nil {
+		return nil
+	}
+	switch channel.Type {
+	case discord.GuildCategory, discord.GuildForum:
+		return nil
+	}
+	last := m.state.LastMessage(channelID)
+	if !last.IsValid() {
+		slog.Debug("not marking channel unread: no newest message known", "channel_id", channelID)
+		return nil
+	}
+
+	return cmd.Task(func() tview.Msg {
+		if err := ui.MarkUnread(m.state, channelID, last, 0); err != nil {
+			slog.Error("failed to mark channel unread", "err", err, "channel_id", channelID)
 		}
 		return nil
 	})

@@ -929,8 +929,8 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		case keybind.Matches(msg, keybinds.SelectPreviousUnread.Keybind, keybinds.SelectNextUnread.Keybind):
 			m.selectAdjacentUnread(keybind.Matches(msg, keybinds.SelectPreviousUnread.Keybind))
 			return m, nil
-		case keybind.Matches(msg, keybinds.MarkRead.Keybind):
-			return m, m.markRead(m.current)
+		case keybind.Matches(msg, keybinds.ToggleRead.Keybind):
+			return m, m.toggleRead(m.current)
 		case keybind.Matches(msg, keybinds.YankID.Keybind):
 			return m, uitree.YankID(m.current)
 		case keybind.Matches(msg, keybinds.ToggleVoice.Keybind):

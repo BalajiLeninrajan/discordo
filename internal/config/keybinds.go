@@ -129,7 +129,8 @@ type GuildsTreeKeybinds struct {
 	SelectPreviousUnread Keybind `toml:"select_previous_unread"`
 	SelectNextUnread     Keybind `toml:"select_next_unread"`
 	// Mark the highlighted channel read, or every channel of the highlighted category, guild, folder or direct messages.
-	MarkRead Keybind `toml:"mark_read"`
+	// If none of them is unread, mark the highlighted channel unread from its newest message instead.
+	ToggleRead Keybind `toml:"toggle_read"`
 	// Join the highlighted voice channel to listen, or leave it.
 	ToggleVoice Keybind `toml:"toggle_voice"`
 	// Play the highlighted voice member louder or quieter.
@@ -347,7 +348,7 @@ func defaultKeybinds() Keybinds {
 			TreeKeybinds:         tree,
 			SelectPreviousUnread: key("prev unread", "K"),
 			SelectNextUnread:     key("next unread", "J"),
-			MarkRead:             key("mark read", "m"),
+			ToggleRead:           key("toggle read", "m"),
 			ToggleVoice:          key("join voice", "v"),
 			IncreaseVolume:       key("volume up", ">"),
 			DecreaseVolume:       key("volume down", "<"),
