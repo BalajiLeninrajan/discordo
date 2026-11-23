@@ -808,9 +808,10 @@ Default: `"K"`
 
 Default: `"J"`
 
-### keybinds.guilds_tree.mark_read
+### keybinds.guilds_tree.toggle_read
 
 Mark the highlighted channel read, or every channel of the highlighted category, guild, folder or direct messages.
+If none of them is unread, mark the highlighted channel unread from its newest message instead.
 
 Default: `"m"`
 

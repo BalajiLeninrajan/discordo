@@ -245,6 +245,22 @@ func TestModelUnreadChannels(t *testing.T) {
 		t.Errorf("unreadChannels(nil) = %v, want none", got)
 	}
 
+	// Only a channel is marked unread; its command asks Discord, so it is not run.
+	for _, test := range []struct {
+		name string
+		ref  any
+		want bool
+	}{
+		{"read channel", read.ID, true},
+		{"category", category.ID, false},
+		{"guild", guild.ID, false},
+		{"direct messages", dmNode{}, false},
+	} {
+		if got := m.markUnread(tree.NewNode("").SetReference(test.ref)) != nil; got != test.want {
+			t.Errorf("markUnread(%s) gives a command = %v, want %v", test.name, got, test.want)
+		}
+	}
+
 	if got := m.categoryUnread(category); got != ningen.ChannelUnread {
 		t.Errorf("categoryUnread = %v, want %v", got, ningen.ChannelUnread)
 	}
