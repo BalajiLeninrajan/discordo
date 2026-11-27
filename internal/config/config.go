@@ -147,6 +147,9 @@ type (
 		// Maximum height (in newline-separated rows) the composer grows to before it starts scrolling internally.
 		// Set to 1 for a fixed single-line input. Values below 1 fall back to 10.
 		MaxHeight int `toml:"max_height"`
+		// Edit with vim's modes. Cancel leaves insert mode for normal mode, which has vim's motions, operators, text objects, counts, registers, undo and redo.
+		// Cancel in normal mode drops the reply, edit, post and attachments, keeping what was typed unless it was the message being edited.
+		VimMode bool `toml:"vim_mode"`
 	}
 
 	SidebarMarkersConfig struct {

@@ -22,7 +22,7 @@ func (m Model) ShortHelp() []keybind.Keybind {
 	}
 
 	cfg := m.cfg.Keybinds.Composer
-	short := []keybind.Keybind{cfg.Send.Keybind, cfg.Newline.Keybind, cfg.Cancel.Keybind, cfg.Paste.Keybind, cfg.OpenEditor.Keybind}
+	short := []keybind.Keybind{cfg.Send.Keybind, cfg.Newline.Keybind, m.cancelKeybind(), cfg.Paste.Keybind, cfg.OpenEditor.Keybind}
 	if m.canEditLastMessage() {
 		short = append(short, cfg.EditLast.Keybind)
 	}
@@ -52,7 +52,7 @@ func (m Model) FullHelp() [][]keybind.Keybind {
 		openEditor = append(openEditor, cfg.OpenFilePicker.Keybind)
 	}
 
-	compose := []keybind.Keybind{cfg.Send.Keybind, cfg.Newline.Keybind, cfg.Cancel.Keybind, cfg.Undo.Keybind}
+	compose := []keybind.Keybind{cfg.Send.Keybind, cfg.Newline.Keybind, m.cancelKeybind(), cfg.Undo.Keybind}
 	compose = append(compose, cfg.EditLast.Keybind)
 	if m.sendMessageData.Reference != nil {
 		compose = append(compose, cfg.ToggleReplyMention.Keybind)
@@ -109,4 +109,13 @@ func (m Model) editAction(key tview.KeyMsg) textarea.Action {
 		}
 	}
 	return textarea.ActionNone
+}
+
+// cancelKeybind returns the cancel keybind, described as leaving insert mode while it does.
+func (m Model) cancelKeybind() keybind.Keybind {
+	bind := m.cfg.Keybinds.Composer.Cancel.Keybind
+	if m.cfg.Composer.VimMode && !m.vim.normal {
+		return bind.WithHelp(bind.Help().Key, "normal mode")
+	}
+	return bind
 }

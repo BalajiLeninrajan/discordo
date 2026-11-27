@@ -32,6 +32,7 @@ import (
 	"github.com/ayn2op/tview/cmd"
 	"github.com/ayn2op/tview/keybind"
 	"github.com/ayn2op/tview/textarea"
+	"github.com/gdamore/tcell/v3"
 	"github.com/rockorager/go-uucode"
 	"github.com/yuin/goldmark/v2/ast"
 	"golang.design/x/clipboard"
@@ -57,6 +58,9 @@ type Model struct {
 	// cursor is the byte offset of the cursor in text, and history what they were before each change, for undo.
 	cursor  int
 	history []edit
+	// redo is what undo took back, most recent last.
+	redo []edit
+	vim  vimState
 
 	disabled bool
 
@@ -179,7 +183,18 @@ func (m *Model) box(focused bool) box.Widget {
 		Focused(focused && !m.disabled).
 		OnInput(func(text string, cursor int) tview.Msg { return editMsg{text, cursor} }).
 		Height(layout.Shrink.Max(m.cfg.Composer.MaxHeight))
-	return ui.Box(text, m.cfg, focused).
+	var area tview.Widget = text
+	if m.cfg.Composer.VimMode {
+		style := tcell.CursorStyleDefault
+		if focused && !m.disabled {
+			style = tcell.CursorStyleSteadyBar
+			if m.vim.normal {
+				area, style = normalArea{text}, tcell.CursorStyleSteadyBlock
+			}
+		}
+		area = cursorStyle{area, style}
+	}
+	return ui.Box(area, m.cfg, focused).
 		Title(ui.Label(m.title(), m.cfg.Theme.Title, focused)).
 		Footer(ui.Label(m.footer(), m.cfg.Theme.Footer, focused)).
 		Height(layout.Shrink)
@@ -201,16 +216,24 @@ func (m Model) title() string {
 	return ""
 }
 
-// footer returns the names of the attached files, or "" if there are none.
+// footer returns the vim mode or the keys of the unfinished command while focused, and the names of the attached files.
 func (m Model) footer() string {
-	if len(m.sendMessageData.Files) == 0 {
-		return ""
+	var parts []string
+	if m.cfg.Composer.VimMode && m.focused && !m.disabled {
+		if !m.vim.normal {
+			parts = append(parts, "-- INSERT --")
+		} else if len(m.vim.pending) > 0 {
+			parts = append(parts, strings.Join(m.vim.pending, ""))
+		}
 	}
-	var names []string
-	for _, file := range m.sendMessageData.Files {
-		names = append(names, file.Name)
+	if len(m.sendMessageData.Files) > 0 {
+		var names []string
+		for _, file := range m.sendMessageData.Files {
+			names = append(names, file.Name)
+		}
+		parts = append(parts, "Attached "+humanJoin(names))
 	}
-	return "Attached " + humanJoin(names)
+	return strings.Join(parts, "  ")
 }
 
 // isBound reports whether key is one of the composer's keybinds.
@@ -235,6 +258,7 @@ func (m Model) isBound(key tview.KeyMsg) bool {
 func (m *Model) setText(text string, cursor int) {
 	if text != m.text {
 		m.history = append(m.history, edit{m.text, m.cursor})
+		m.redo = nil
 	}
 
 	m.text, m.cursor = text, cursor
@@ -258,7 +282,20 @@ func (m *Model) undo() {
 
 	last := m.history[len(m.history)-1]
 	m.history = m.history[:len(m.history)-1]
+	m.redo = append(m.redo, edit{m.text, m.cursor})
 	m.text, m.cursor = last.text, last.cursor
+}
+
+// redoEdit restores the text and cursor that the last undo took back.
+func (m *Model) redoEdit() {
+	if len(m.redo) == 0 {
+		return
+	}
+
+	next := m.redo[len(m.redo)-1]
+	m.redo = m.redo[:len(m.redo)-1]
+	m.history = append(m.history, edit{m.text, m.cursor})
+	m.text, m.cursor = next.text, next.cursor
 }
 
 // pasteText inserts the text on the clipboard at the cursor.
@@ -275,6 +312,18 @@ func (m *Model) reset() {
 	m.editing = nil
 	m.sendMessageData = &api.SendMessageData{}
 	m.setText("", 0)
+	m.vim.normal, m.vim.pending = false, nil
+}
+
+// cancel drops the reply, the edit, the post being started and the attachments.
+// What was typed stays, unless it is the message being edited.
+func (m *Model) cancel() {
+	if m.editing != nil {
+		m.editing = nil
+		m.setText("", 0)
+	}
+	m.sendMessageData = &api.SendMessageData{}
+	m.endPost()
 }
 
 func (m Model) canEditLastMessage() bool {
@@ -287,6 +336,7 @@ func (m Model) canEditLastMessage() bool {
 func (m *Model) StartEdit(message discord.Message) {
 	m.editing = &message
 	m.setText(message.Content, len(message.Content))
+	m.vim.normal, m.vim.pending = false, nil
 }
 
 // StartReply makes the next message a reply to message by name, mentioning its author if mention is set.
@@ -295,6 +345,7 @@ func (m *Model) StartReply(message discord.Message, name string, mention bool) {
 	data.Reference = &discord.MessageReference{MessageID: message.ID}
 	data.AllowedMentions = &api.AllowedMentions{RepliedUser: option.Some(mention)}
 	m.replyName = name
+	m.vim.normal, m.vim.pending = false, nil
 }
 
 func (m *Model) toggleReplyMention() {
@@ -603,6 +654,11 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 		return m, nil
 	case editMsg:
 		m.setText(msg.text, msg.cursor)
+		if m.vim.normal {
+			// Paste is all that edits the text from normal mode.
+			m.clampCursor()
+			return m, nil
+		}
 		typingCmd := m.sendTyping()
 		return m, cmd.Batch{typingCmd, m.showAutocomplete()}
 
@@ -613,6 +669,7 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 			return m, editLastMessage()
 		case keybind.Matches(msg, keybinds.Paste.Keybind):
 			m.pasteText()
+			m.clampCursor()
 			return m, pasteImage()
 		case keybind.Matches(msg, keybinds.Send.Keybind):
 			if m.autocomplete.Visible() {
@@ -623,6 +680,8 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 			return m, cmd.Batch{m.showCompletions("", nil), m.openEditor()}
 		case keybind.Matches(msg, keybinds.OpenFilePicker.Keybind):
 			return m, cmd.Batch{m.showCompletions("", nil), m.pickFiles()}
+		case keybind.Matches(msg, keybinds.Cancel.Keybind) && m.cfg.Composer.VimMode:
+			return m, m.vimCancel()
 		case keybind.Matches(msg, keybinds.Cancel.Keybind):
 			if m.autocomplete.Visible() {
 				return m, m.showCompletions("", nil)
@@ -634,13 +693,19 @@ func (m Model) Update(msg tview.Msg) (Model, tview.Cmd) {
 			if m.autocomplete.Visible() {
 				return m, m.complete()
 			}
-			m.insert("\t")
+			if !m.vim.normal {
+				m.insert("\t")
+			}
 			return m, nil
 		case keybind.Matches(msg, keybinds.ToggleReplyMention.Keybind):
 			m.toggleReplyMention()
 			return m, nil
 		case keybind.Matches(msg, keybinds.Undo.Keybind):
 			m.undo()
+			m.clampCursor()
+			return m, nil
+		case m.vim.normal:
+			m.normalKey(msg)
 			return m, nil
 		}
 	case autocomplete.Msg, images.ChangedMsg:
