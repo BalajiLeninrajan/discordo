@@ -246,6 +246,13 @@ Set to 1 for a fixed single-line input. Values below 1 fall back to 10.
 
 Default: `10`
 
+## composer.vim_mode
+
+Edit with vim's modes. Cancel leaves insert mode for normal mode, which has vim's motions, operators, text objects, counts, registers, undo and redo.
+Cancel in normal mode drops the reply, edit, post and attachments, keeping what was typed unless it was the message being edited.
+
+Default: `false`
+
 # ui
 
 Layout and behavior of the widgets.
